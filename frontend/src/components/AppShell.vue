@@ -28,7 +28,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
-import { RouterView } from 'vue-router'
+import { RouterView, useRouter, useRoute } from 'vue-router'
 import ServerSidebar from '@/components/ServerSidebar.vue'
 import { useNavStore } from '@/stores/navStore'
 import { storeToRefs } from 'pinia'
@@ -36,8 +36,16 @@ import { storeToRefs } from 'pinia'
 const navStore = useNavStore()
 const { activePage } = storeToRefs(navStore)
 const sidebarOpen = ref(false)
+const router = useRouter()
+const route = useRoute()
 
-onMounted(() => navStore.loadNav())
+onMounted(async () => {
+  await navStore.loadNav()
+  // After loading, auto-navigate to the first page if sitting on the home view
+  if (route.name === 'home' && navStore.pages.length > 0) {
+    router.replace(`/page/${navStore.pages[0].id}`)
+  }
+})
 </script>
 
 <style scoped>

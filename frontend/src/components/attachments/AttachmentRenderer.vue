@@ -1,8 +1,8 @@
 <template>
-  <ImageAttachment v-if="note.attachment_type === 'image'" :note="note" />
-  <FileAttachment v-else-if="note.attachment_type === 'file'" :note="note" />
-  <EmbedAttachment v-else-if="note.attachment_type === 'embed'" :note="note" />
-  <VoiceAttachment v-else-if="note.attachment_type === 'voice'" :note="note" />
+  <ImageAttachment v-if="noteFile.attachment_type === 'image'" :note-file="noteFile" />
+  <FileAttachment v-else-if="noteFile.attachment_type === 'file'" :note-file="noteFile" />
+  <EmbedAttachment v-else-if="noteFile.attachment_type === 'embed'" :note-file="noteFile" />
+  <VoiceAttachment v-else-if="noteFile.attachment_type === 'voice'" :note-file="noteFile" />
 </template>
 
 <script setup>
@@ -12,6 +12,6 @@ import EmbedAttachment from './EmbedAttachment.vue'
 import VoiceAttachment from './VoiceAttachment.vue'
 
 defineProps({
-  note: { type: Object, required: true },
+  noteFile: { type: Object, required: true },
 })
 </script>

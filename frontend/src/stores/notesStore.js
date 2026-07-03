@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import groupBy from 'lodash/groupBy'
-import { getNotes, createNote, updateNote, deleteNote } from '@/services/api'
+import { getNotes, createNote, createNoteFile, updateNote, deleteNote, uploadFile } from '@/services/api'
 import { getDayKey } from '@/utils/dateUtils'
 
 export const useNotesStore = defineStore('notes', () => {
@@ -10,7 +10,6 @@ export const useNotesStore = defineStore('notes', () => {
   const currentPageId = ref(null)
 
   async function loadNotes(pageId) {
-    if (currentPageId.value === pageId && notes.value.length) return
     loading.value = true
     currentPageId.value = pageId
     notes.value = []
@@ -25,16 +24,33 @@ export const useNotesStore = defineStore('notes', () => {
     return groupBy(notes.value, (n) => getDayKey(n.date_created))
   }
 
-  async function addNote(pageId, content, attachmentType = 'none', attachmentFileId = null, embedUrl = null) {
-    const item = await createNote({
-      page_id: pageId,
-      content,
-      attachment_type: attachmentType,
-      attachment_file: attachmentFileId,
-      embed_url: embedUrl,
-    })
-    notes.value.push(item)
-    return item
+  // attachments: array of { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string }
+  async function addNote(pageId, content, attachments = []) {
+    const note = await createNote({ page_id: pageId, content })
+    note.files = []
+
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i]
+      let fileId = null
+
+      if (att.type !== 'embed' && att.file) {
+        const uploaded = await uploadFile(att.file)
+        fileId = uploaded.id
+      }
+
+      const noteFile = await createNoteFile({
+        note_id: note.id,
+        file_id: fileId,
+        attachment_type: att.type,
+        embed_url: att.url ?? null,
+        sort_order: i,
+      })
+
+      note.files.push(noteFile)
+    }
+
+    notes.value.push(note)
+    return note
   }
 
   async function editNote(id, content) {

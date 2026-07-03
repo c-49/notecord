@@ -67,7 +67,7 @@ async function relationExists(collection, field) {
   }
 }
 
-async function createRelation(collection, field, relatedCollection, onDelete = 'SET NULL') {
+async function createRelation(collection, field, relatedCollection, onDelete = 'SET NULL', meta = null) {
   if (await relationExists(collection, field)) {
     console.log(`  ↳ relation "${collection}.${field}" already exists, skipping`)
     return
@@ -77,6 +77,7 @@ async function createRelation(collection, field, relatedCollection, onDelete = '
     field,
     related_collection: relatedCollection,
     schema: { on_delete: onDelete },
+    ...(meta ? { meta } : {}),
   })
   console.log(`  ✓ created relation ${collection}.${field} → ${relatedCollection}`)
 }
@@ -173,12 +174,38 @@ async function main() {
     { icon: 'notes', sort_field: 'date_created' }
   )
 
+  // ── note_files ───────────────────────────────────────────────────────────────
+  console.log('Creating "note_files" collection…')
+  await createCollection(
+    'note_files',
+    [
+      primaryKey(),
+      { field: 'note_id', type: 'integer', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'file_id', type: 'uuid', meta: { interface: 'file' }, schema: { is_nullable: true } },
+      { ...stringField('attachment_type', false, 'file'), schema: { is_nullable: false, default_value: 'file' } },
+      stringField('embed_url', true),
+      intField('sort_order', 0),
+    ],
+    { icon: 'attach_file', sort_field: 'sort_order' }
+  )
+
   // ── Relations ────────────────────────────────────────────────────────────────
   console.log('\nCreating relations…')
 
   await createRelation('pages', 'section_id', 'sections', 'SET NULL')
   await createRelation('notes', 'page_id', 'pages', 'CASCADE')
   await createRelation('notes', 'attachment_file', 'directus_files', 'SET NULL')
+  // note_files relations — one_field:'files' registers the FK side of the O2M
+  await createRelation('note_files', 'note_id', 'notes', 'CASCADE', { one_field: 'files' })
+  await createRelation('note_files', 'file_id', 'directus_files', 'SET NULL')
+
+  // Directus 11 requires an explicit directus_fields entry for the virtual O2M alias
+  // on the "one" side, even when one_field is set on the relation.
+  await createField('notes', {
+    field: 'files',
+    type: 'alias',
+    meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
+  })
 
   // ── Permissions ──────────────────────────────────────────────────────────────
   // In Directus 11, admin_access:true only grants panel access.
@@ -187,7 +214,7 @@ async function main() {
 
   const policiesResp = await req('GET', '/policies?filter[admin_access][_eq]=true&limit=10')
   const policies = policiesResp.data ?? policiesResp
-  const userCollections = ['sections', 'pages', 'notes']
+  const userCollections = ['sections', 'pages', 'notes', 'note_files']
   const actions = ['create', 'read', 'update', 'delete']
 
   for (const policy of policies) {
@@ -208,7 +235,7 @@ async function main() {
   }
 
   console.log('\n✅ Schema setup complete!\n')
-  console.log('Collections created: sections, pages, notes')
+  console.log('Collections created: sections, pages, notes, note_files')
   console.log(`Directus admin: ${BASE}`)
 }
 

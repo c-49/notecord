@@ -3,7 +3,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 const routes = [
   {
     path: '/',
-    redirect: '/page/welcome',
+    name: 'home',
+    component: () => import('@/components/HomeView.vue'),
   },
   {
     path: '/page/:pageId',

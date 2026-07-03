@@ -3,7 +3,6 @@ import {
   rest,
   staticToken,
   readItems,
-  readItem,
   createItem,
   updateItem,
   deleteItem,
@@ -57,7 +56,7 @@ export async function getNotes(pageId) {
     readItems('notes', {
       filter: { page_id: { _eq: pageId } },
       sort: ['date_created'],
-      fields: ['*', 'attachment_file.*'],
+      fields: ['*', 'files.*', 'files.file_id.*'],
     })
   )
 }
@@ -74,6 +73,16 @@ export async function deleteNote(id) {
   return client.request(deleteItem('notes', id))
 }
 
+// ── Note files (attachments) ──────────────────────────────────────────────────
+
+export async function createNoteFile(data) {
+  return client.request(createItem('note_files', data, { fields: ['*', 'file_id.*'] }))
+}
+
+export async function deleteNoteFile(id) {
+  return client.request(deleteItem('note_files', id))
+}
+
 // ── File uploads ──────────────────────────────────────────────────────────────
 
 export async function uploadFile(file) {
@@ -85,5 +94,5 @@ export async function uploadFile(file) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function getFileUrl(fileId) {
-  return `${import.meta.env.VITE_DIRECTUS_URL}/assets/${fileId}`
+  return `${import.meta.env.VITE_DIRECTUS_URL}/assets/${fileId}?access_token=${import.meta.env.VITE_DIRECTUS_TOKEN}`
 }

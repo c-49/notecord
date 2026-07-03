@@ -15,30 +15,47 @@
         type="range"
         :max="duration || 100"
         :value="currentTime"
+        :style="progressStyle"
         @input="seek"
         class="scrubber-input"
       />
-      <div class="voice-time">{{ formatTime(currentTime) }} / {{ formatTime(duration) }}</div>
+      <div class="voice-time">{{ formatTime(currentTime) }} / {{ duration > 0 ? formatTime(duration) : '--:--' }}</div>
     </div>
 
-    <audio ref="audioEl" :src="audioUrl" @timeupdate="onTimeUpdate" @loadedmetadata="onMeta" @ended="playing = false" />
+    <audio ref="audioEl" :src="audioUrl" preload="metadata"
+      @timeupdate="onTimeUpdate"
+      @loadedmetadata="onMeta"
+      @durationchange="onDurationChange"
+      @seeked="onSeeked"
+      @ended="onEnded"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { getFileUrl } from '@/services/api'
 
 const props = defineProps({
-  note: { type: Object, required: true },
+  noteFile: { type: Object, required: true },
 })
 
 const audioEl = ref(null)
 const playing = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
+let seekingForDuration = false
 
-const audioUrl = computed(() => getFileUrl(props.note.attachment_file?.id))
+const audioUrl = computed(() => {
+  const f = props.noteFile.file_id
+  const id = typeof f === 'string' ? f : f?.id
+  return getFileUrl(id)
+})
+
+const progressStyle = computed(() => {
+  const pct = duration.value > 0 ? (currentTime.value / duration.value) * 100 : 0
+  return `--progress: ${pct.toFixed(1)}%`
+})
 
 function togglePlay() {
   if (!audioEl.value) return
@@ -46,7 +63,7 @@ function togglePlay() {
     audioEl.value.pause()
     playing.value = false
   } else {
-    audioEl.value.play()
+    audioEl.value.play().catch(() => {})
     playing.value = true
   }
 }
@@ -56,12 +73,45 @@ function onTimeUpdate() {
 }
 
 function onMeta() {
-  duration.value = audioEl.value?.duration ?? 0
+  const d = audioEl.value?.duration ?? 0
+  if (isFinite(d) && d > 0) {
+    duration.value = d
+  } else {
+    // WebM files from MediaRecorder have Infinity duration — seek to end to detect real length
+    seekingForDuration = true
+    audioEl.value.currentTime = 1e10
+  }
+}
+
+function onDurationChange() {
+  const d = audioEl.value?.duration ?? 0
+  if (isFinite(d) && d > 0) {
+    duration.value = d
+  }
+}
+
+function onSeeked() {
+  if (seekingForDuration) {
+    seekingForDuration = false
+    duration.value = audioEl.value.currentTime
+    currentTime.value = 0  // reset display before second seek fires timeupdate
+    audioEl.value.currentTime = 0
+  }
+}
+
+function onEnded() {
+  playing.value = false
+  currentTime.value = 0
 }
 
 function seek(e) {
-  if (audioEl.value) audioEl.value.currentTime = e.target.value
+  const t = parseFloat(e.target.value)
+  if (audioEl.value && isFinite(t)) audioEl.value.currentTime = t
 }
+
+onBeforeUnmount(() => {
+  audioEl.value?.pause()
+})
 
 function formatTime(s) {
   if (!s || isNaN(s)) return '0:00'
@@ -109,7 +159,38 @@ function formatTime(s) {
 
 .scrubber-input {
   width: 100%;
-  accent-color: var(--accent);
+  cursor: pointer;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--progress, 0%),
+    var(--bg-hover) var(--progress, 0%)
+  );
+  outline: none;
+}
+
+.scrubber-input::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  transition: transform var(--t-fast);
+}
+
+.scrubber-input::-webkit-slider-thumb:hover {
+  transform: scale(1.3);
+}
+
+.scrubber-input::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
   cursor: pointer;
 }
 

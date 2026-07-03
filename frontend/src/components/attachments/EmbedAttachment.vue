@@ -1,9 +1,9 @@
 <template>
-  <a class="embed-card" :href="note.embed_url" target="_blank" rel="noopener">
+  <a class="embed-card" :href="noteFile.embed_url" target="_blank" rel="noopener">
     <div class="embed-accent" />
     <div class="embed-body">
       <span class="embed-url">{{ hostname }}</span>
-      <span class="embed-link">{{ note.embed_url }}</span>
+      <span class="embed-link">{{ noteFile.embed_url }}</span>
     </div>
   </a>
 </template>
@@ -12,14 +12,14 @@
 import { computed } from 'vue'
 
 const props = defineProps({
-  note: { type: Object, required: true },
+  noteFile: { type: Object, required: true },
 })
 
 const hostname = computed(() => {
   try {
-    return new URL(props.note.embed_url).hostname
+    return new URL(props.noteFile.embed_url).hostname
   } catch {
-    return props.note.embed_url
+    return props.noteFile.embed_url
   }
 })
 </script>

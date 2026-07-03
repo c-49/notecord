@@ -47,6 +47,8 @@ export const useNavStore = defineStore('nav', () => {
   async function removeSection(id) {
     await deleteSection(id)
     sections.value = sections.value.filter((s) => s.id !== id)
+    // DB uses SET NULL on pages.section_id — mirror that in local state
+    pages.value.forEach((p) => { if (p.section_id === id) p.section_id = null })
   }
 
   async function addPage(name, sectionId = null, emoji = null) {

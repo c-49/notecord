@@ -87,7 +87,10 @@
       <div v-if="showAddSection" class="modal-backdrop" @click.self="showAddSection = false">
         <div class="modal">
           <h3>New Section</h3>
-          <input v-model="newSectionName" placeholder="Section name" @keyup.enter="submitSection" autofocus />
+          <div class="name-row">
+            <EmojiInput v-model="newSectionEmoji" default-char="📁" />
+            <input ref="sectionNameInput" v-model="newSectionName" class="name-input" placeholder="Section name" @keyup.enter="submitSection" @keyup.escape="showAddSection = false" />
+          </div>
           <div class="modal-actions">
             <button class="btn btn-ghost" @click="showAddSection = false">Cancel</button>
             <button class="btn btn-primary" :disabled="!newSectionName.trim()" @click="submitSection">Create</button>
@@ -98,7 +101,10 @@
       <div v-if="showAddPage" class="modal-backdrop" @click.self="showAddPage = false">
         <div class="modal">
           <h3>New Page</h3>
-          <input v-model="newPageName" placeholder="Page name" @keyup.enter="submitPage" autofocus />
+          <div class="name-row">
+            <EmojiInput v-model="newPageEmoji" default-char="📄" />
+            <input ref="pageNameInput" v-model="newPageName" class="name-input" placeholder="Page name" @keyup.enter="submitPage" @keyup.escape="showAddPage = false" />
+          </div>
           <div class="modal-actions">
             <button class="btn btn-ghost" @click="showAddPage = false">Cancel</button>
             <button class="btn btn-primary" :disabled="!newPageName.trim()" @click="submitPage">Create</button>
@@ -110,21 +116,29 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useNavStore } from '@/stores/navStore'
+import { useRouter } from 'vue-router'
 import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
+import EmojiInput from '@/components/EmojiInput.vue'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
+const router = useRouter()
 
 const dropdownOpen = ref(false)
 const dropdownWrap = ref(null)
 
 const showAddSection = ref(false)
 const newSectionName = ref('')
+const newSectionEmoji = ref('')
+const sectionNameInput = ref(null)
+
 const showAddPage = ref(false)
 const newPageName = ref('')
+const newPageEmoji = ref('')
+const pageNameInput = ref(null)
 
 const isEmpty = computed(
   () => !navStore.loading && navStore.sections.length === 0 && navStore.pages.length === 0
@@ -132,26 +146,35 @@ const isEmpty = computed(
 
 function openAddPage() {
   dropdownOpen.value = false
+  newPageName.value = ''
+  newPageEmoji.value = ''
   showAddPage.value = true
+  nextTick(() => pageNameInput.value?.focus())
 }
 
 function openAddSection() {
   dropdownOpen.value = false
+  newSectionName.value = ''
+  newSectionEmoji.value = ''
   showAddSection.value = true
+  nextTick(() => sectionNameInput.value?.focus())
 }
 
 async function submitSection() {
   if (!newSectionName.value.trim()) return
-  await navStore.addSection(newSectionName.value.trim())
+  await navStore.addSection(newSectionName.value.trim(), newSectionEmoji.value || null)
   newSectionName.value = ''
+  newSectionEmoji.value = ''
   showAddSection.value = false
 }
 
 async function submitPage() {
   if (!newPageName.value.trim()) return
-  await navStore.addPage(newPageName.value.trim())
+  const page = await navStore.addPage(newPageName.value.trim(), null, newPageEmoji.value || null)
   newPageName.value = ''
+  newPageEmoji.value = ''
   showAddPage.value = false
+  router.push(`/page/${page.id}`)
 }
 
 function onClickOutside(e) {
@@ -344,7 +367,14 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   color: var(--text-primary);
 }
 
-.modal input {
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.name-input {
+  flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
@@ -355,7 +385,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   transition: border-color var(--t-base);
 }
 
-.modal input:focus {
+.name-input:focus {
   border-color: var(--accent);
 }
 
