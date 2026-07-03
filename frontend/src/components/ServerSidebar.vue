@@ -2,44 +2,87 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="app-name">NoteCord</span>
-      <button class="close-btn" aria-label="Close sidebar" @click="emit('close')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-        </svg>
-      </button>
-    </div>
 
-    <div class="sidebar-scroll">
-      <!-- Root-level pages (no section) -->
-      <nav class="section-group" v-if="navStore.rootPages.length">
-        <PageListItem
-          v-for="page in navStore.rootPages"
-          :key="page.id"
-          :page="page"
-        />
-      </nav>
+      <div class="header-actions">
+        <!-- Dropdown trigger -->
+        <div class="dropdown-wrap" ref="dropdownWrap">
+          <button
+            class="header-btn"
+            aria-label="Add section or page"
+            :aria-expanded="dropdownOpen"
+            @click="dropdownOpen = !dropdownOpen"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </button>
 
-      <!-- Sections with their pages -->
-      <SectionGroup
-        v-for="section in navStore.pagesBySection"
-        :key="section.id"
-        :section="section"
-      />
+          <Transition name="dropdown">
+            <div v-if="dropdownOpen" class="dropdown-menu" role="menu">
+              <button class="dropdown-item" role="menuitem" @click="openAddPage">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                </svg>
+                New Page
+              </button>
+              <button class="dropdown-item" role="menuitem" @click="openAddSection">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                </svg>
+                New Section
+              </button>
+            </div>
+          </Transition>
+        </div>
 
-      <!-- Add controls -->
-      <div class="add-controls">
-        <button class="add-btn" @click="showAddSection = true">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-          Add Section
+        <!-- Settings (V2) -->
+        <button class="header-btn" aria-label="Settings" title="Settings (coming soon)" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
         </button>
-        <button class="add-btn" @click="showAddPage = true">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-          Add Page
+
+        <!-- Mobile close -->
+        <button class="header-btn close-btn" aria-label="Close sidebar" @click="emit('close')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
         </button>
       </div>
     </div>
 
-    <!-- Inline modals (add section / add page) -->
+    <div class="sidebar-scroll">
+      <!-- Empty state -->
+      <div v-if="isEmpty" class="empty-state">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M3 6h18M3 12h18M3 18h18"/>
+        </svg>
+        <p>It's empty here</p>
+        <span>Use the <strong>+</strong> button above to add a page or section.</span>
+      </div>
+
+      <template v-else>
+        <!-- Root-level pages (no section) -->
+        <nav v-if="navStore.rootPages.length">
+          <PageListItem
+            v-for="page in navStore.rootPages"
+            :key="page.id"
+            :page="page"
+          />
+        </nav>
+
+        <!-- Sections with their pages -->
+        <SectionGroup
+          v-for="section in navStore.pagesBySection"
+          :key="section.id"
+          :section="section"
+        />
+      </template>
+    </div>
+
+    <!-- Modals -->
     <Teleport to="body">
       <div v-if="showAddSection" class="modal-backdrop" @click.self="showAddSection = false">
         <div class="modal">
@@ -67,7 +110,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useNavStore } from '@/stores/navStore'
 import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
@@ -75,10 +118,27 @@ import PageListItem from '@/components/PageListItem.vue'
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
 
+const dropdownOpen = ref(false)
+const dropdownWrap = ref(null)
+
 const showAddSection = ref(false)
 const newSectionName = ref('')
 const showAddPage = ref(false)
 const newPageName = ref('')
+
+const isEmpty = computed(
+  () => !navStore.loading && navStore.sections.length === 0 && navStore.pages.length === 0
+)
+
+function openAddPage() {
+  dropdownOpen.value = false
+  showAddPage.value = true
+}
+
+function openAddSection() {
+  dropdownOpen.value = false
+  showAddSection.value = true
+}
 
 async function submitSection() {
   if (!newSectionName.value.trim()) return
@@ -93,6 +153,15 @@ async function submitPage() {
   newPageName.value = ''
   showAddPage.value = false
 }
+
+function onClickOutside(e) {
+  if (dropdownOpen.value && dropdownWrap.value && !dropdownWrap.value.contains(e.target)) {
+    dropdownOpen.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('mousedown', onClickOutside))
+onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
 </script>
 
 <style scoped>
@@ -106,12 +175,13 @@ async function submitPage() {
   overflow: hidden;
 }
 
+/* ── Header ── */
 .sidebar-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   height: var(--header-h);
-  padding: 0 var(--sp-4);
+  padding: 0 var(--sp-3) 0 var(--sp-4);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
@@ -121,58 +191,131 @@ async function submitPage() {
   font-size: var(--text-base);
   color: var(--text-primary);
   letter-spacing: 0.02em;
+  flex: 1;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.header-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  color: var(--text-muted);
+  transition: color var(--t-base), background var(--t-base);
+}
+
+.header-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.header-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .close-btn {
   display: none;
-  color: var(--text-muted);
-  padding: var(--sp-1);
-  border-radius: var(--r-sm);
-  transition: color var(--t-base);
 }
 
-.close-btn:hover {
+/* ── Dropdown ── */
+.dropdown-wrap {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 160px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg);
+  padding: var(--sp-1);
+  box-shadow: var(--shadow-lg);
+  z-index: 50;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  transition: background var(--t-fast), color var(--t-fast);
+  text-align: left;
+}
+
+.dropdown-item:hover {
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
+/* Dropdown animation */
+.dropdown-enter-active,
+.dropdown-leave-active {
+  transition: opacity var(--t-fast), transform var(--t-fast);
+}
+
+.dropdown-enter-from,
+.dropdown-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.97);
+}
+
+/* ── Scroll area ── */
 .sidebar-scroll {
   flex: 1;
   overflow-y: auto;
   padding: var(--sp-2) 0 var(--sp-4);
-}
-
-.section-group {
-  margin-bottom: var(--sp-2);
-}
-
-.add-controls {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-1);
-  padding: var(--sp-2) var(--sp-2);
-  margin-top: var(--sp-4);
 }
 
-.add-btn {
+/* ── Empty state ── */
+.empty-state {
+  flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-2);
-  border-radius: var(--r-md);
-  font-size: var(--text-xs);
-  font-weight: 600;
+  padding: var(--sp-8) var(--sp-4);
+  text-align: center;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  transition: color var(--t-base), background var(--t-base);
 }
 
-.add-btn:hover {
+.empty-state svg {
+  opacity: 0.4;
+  margin-bottom: var(--sp-1);
+}
+
+.empty-state p {
+  font-size: var(--text-sm);
+  font-weight: 600;
   color: var(--text-secondary);
-  background: var(--bg-hover);
 }
 
-/* Modal */
+.empty-state span {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.empty-state strong {
+  color: var(--text-secondary);
+}
+
+/* ── Modal ── */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -222,6 +365,7 @@ async function submitPage() {
   gap: var(--sp-2);
 }
 
+/* ── Mobile ── */
 @media (max-width: 768px) {
   .sidebar {
     position: fixed;
@@ -238,7 +382,7 @@ async function submitPage() {
   }
 
   .close-btn {
-    display: block;
+    display: flex;
   }
 }
 </style>
