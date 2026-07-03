@@ -1,0 +1,33 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.4",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  },
+  "dependencies": {
+    "@directus/sdk": "^23.0.0",
+    "@tiptap/extension-image": "^3.27.1",
+    "@tiptap/extension-link": "^3.27.1",
+    "@tiptap/extension-table": "^3.27.1",
+    "@tiptap/extension-table-cell": "^3.27.1",
+    "@tiptap/extension-table-header": "^3.27.1",
+    "@tiptap/extension-table-row": "^3.27.1",
+    "@tiptap/pm": "^3.27.1",
+    "@tiptap/starter-kit": "^3.27.1",
+    "@tiptap/vue-3": "^3.27.1",
+    "lodash": "^4.18.1",
+    "luxon": "^3.7.2",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.39",
+    "vue-router": "^4.6.4"
+  }
+}
