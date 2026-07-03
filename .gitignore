@@ -25,3 +25,6 @@ Thumbs.db
 
 # Docker volumes are ephemeral; don't commit data
 backend/data/
+
+# Others
+notes-app-claude-code-prompt
