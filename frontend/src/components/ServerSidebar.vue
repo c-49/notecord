@@ -36,8 +36,8 @@
           </Transition>
         </div>
 
-        <!-- Settings (V2) -->
-        <button class="header-btn" aria-label="Settings" title="Settings (coming soon)" disabled>
+        <!-- Theme customizer -->
+        <button class="header-btn" aria-label="Settings" title="Customize theme" @click="showThemeCustomizer = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"/>
             <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>
@@ -112,6 +112,8 @@
         </div>
       </div>
     </Teleport>
+
+    <ThemeCustomizer v-if="showThemeCustomizer" @close="showThemeCustomizer = false" />
   </aside>
 </template>
 
@@ -122,11 +124,13 @@ import { useRouter } from 'vue-router'
 import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
 import EmojiInput from '@/components/EmojiInput.vue'
+import ThemeCustomizer from '@/components/ThemeCustomizer.vue'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
 const router = useRouter()
 
+const showThemeCustomizer = ref(false)
 const dropdownOpen = ref(false)
 const dropdownWrap = ref(null)
 
@@ -183,8 +187,14 @@ function onClickOutside(e) {
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', onClickOutside))
-onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
+onMounted(() => {
+  document.addEventListener('mousedown', onClickOutside)
+  document.addEventListener('touchstart', onClickOutside)
+})
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onClickOutside)
+  document.removeEventListener('touchstart', onClickOutside)
+})
 </script>
 
 <style scoped>
@@ -239,9 +249,11 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   background: var(--bg-hover);
 }
 
-.header-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
+@media (hover: none) {
+  .header-btn {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 .close-btn {
@@ -354,7 +366,7 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xl);
   padding: var(--sp-6);
-  width: 360px;
+  width: min(360px, calc(100vw - 2rem));
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);

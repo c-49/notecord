@@ -1,6 +1,7 @@
 <template>
   <div
     class="page-row"
+    :class="{ 'is-active': isActive }"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
@@ -14,8 +15,9 @@
       <span class="page-name">{{ page.name }}</span>
     </RouterLink>
 
-    <!-- Hover actions (sibling to the link, not inside it) -->
-    <div v-show="hovered || isActive" class="page-actions">
+    <!-- Hover actions (sibling to the link, not inside it — always in the DOM
+         so touch devices, which never fire mouseenter, can still reach them) -->
+    <div class="page-actions">
       <button class="action-btn" title="Rename" @click.stop="startRename">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
@@ -204,6 +206,20 @@ async function confirmDelete() {
   padding-right: var(--sp-1);
 }
 
+@media (hover: hover) {
+  .page-actions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast);
+  }
+
+  .page-row:hover .page-actions,
+  .page-row.is-active .page-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .action-btn {
   display: flex;
   align-items: center;
@@ -213,6 +229,13 @@ async function confirmDelete() {
   border-radius: var(--r-sm);
   color: var(--text-muted);
   transition: color var(--t-fast), background var(--t-fast);
+}
+
+@media (hover: none) {
+  .action-btn {
+    width: 32px;
+    height: 32px;
+  }
 }
 
 .action-btn:hover {
@@ -241,7 +264,7 @@ async function confirmDelete() {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xl);
   padding: var(--sp-6);
-  width: 360px;
+  width: min(360px, calc(100vw - 2rem));
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);

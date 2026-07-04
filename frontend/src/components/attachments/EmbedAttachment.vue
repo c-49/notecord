@@ -27,7 +27,7 @@ const hostname = computed(() => {
 <style scoped>
 .embed-card {
   display: flex;
-  max-width: 432px;
+  max-width: min(432px, 100%);
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);

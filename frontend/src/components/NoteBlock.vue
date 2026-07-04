@@ -5,8 +5,9 @@
     @mouseenter="highlighted = true"
     @mouseleave="highlighted = false"
   >
-    <!-- Hover action toolbar -->
-    <div v-if="highlighted && !editing" class="note-actions">
+    <!-- Hover action toolbar (always in the DOM so touch devices, which never
+         fire mouseenter, can still reach it — see @media (hover: none) below) -->
+    <div v-if="!editing" class="note-actions" :class="{ visible: highlighted }">
       <button class="action-btn" title="Edit" @click.stop="startEdit">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
@@ -29,14 +30,17 @@
     <div class="note-body">
       <!-- Inline edit mode -->
       <template v-if="editing">
-        <textarea
-          ref="editEl"
-          v-model="editContent"
-          class="edit-textarea"
-          @keydown.enter.exact.prevent="submitEdit"
-          @keydown.escape="cancelEdit"
-          @input="autoResize"
-        />
+        <div class="edit-wrap" @keydown.escape="cancelEdit">
+          <RichTextEditor
+            ref="editEditorRef"
+            v-model="editContent"
+            compact
+            autofocus
+            placeholder="Edit note…"
+            @update:empty="(v) => (editEmpty = v)"
+            @submit="submitEdit"
+          />
+        </div>
         <div class="edit-actions">
           <span class="edit-hint">Shift+Enter for newline · Esc to cancel</span>
           <button class="edit-btn edit-ghost" @click="cancelEdit">Cancel</button>
@@ -47,9 +51,18 @@
       <!-- Normal display -->
       <template v-else>
         <div v-if="note.content" class="note-content" v-html="renderedContent" />
-        <div v-if="note.files && note.files.length" class="note-files">
+        <!-- Images share a wrapping flex grid so multiple photos line up together -->
+        <div v-if="imageFiles.length" class="note-images">
           <AttachmentRenderer
-            v-for="noteFile in note.files"
+            v-for="noteFile in imageFiles"
+            :key="noteFile.id"
+            :note-file="noteFile"
+          />
+        </div>
+        <!-- Files/voice/embeds each get their own row -->
+        <div v-if="otherFiles.length" class="note-files">
+          <AttachmentRenderer
+            v-for="noteFile in otherFiles"
             :key="noteFile.id"
             :note-file="noteFile"
           />
@@ -78,6 +91,7 @@ import { ref, computed, nextTick } from 'vue'
 import { formatNoteTimestamp } from '@/utils/dateUtils'
 import { useNotesStore } from '@/stores/notesStore'
 import AttachmentRenderer from '@/components/attachments/AttachmentRenderer.vue'
+import RichTextEditor from '@/components/composer/RichTextEditor.vue'
 
 const props = defineProps({
   note: { type: Object, required: true },
@@ -88,35 +102,29 @@ const notesStore = useNotesStore()
 const highlighted = ref(false)
 const editing = ref(false)
 const editContent = ref('')
-const editEl = ref(null)
+const editEmpty = ref(true)
+const editEditorRef = ref(null)
 const saving = ref(false)
 const showDeleteConfirm = ref(false)
 const deleting = ref(false)
 
-// Safe rendering: escape HTML then convert newlines to <br> for plain text Phase 4.
-// Phase 7 will switch this to Tiptap JSON rendering.
-const renderedContent = computed(() => {
-  if (!props.note.content) return ''
-  return props.note.content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\n/g, '<br>')
-})
+const imageFiles = computed(() => (props.note.files ?? []).filter((f) => f.attachment_type === 'image'))
+const otherFiles = computed(() => (props.note.files ?? []).filter((f) => f.attachment_type !== 'image'))
+
+// note.content is HTML produced by Tiptap/ProseMirror — its parser only ever
+// serializes nodes/marks defined in the editor schema, so this can't carry
+// arbitrary script tags even though it came in via v-html.
+// Checkboxes are disabled here because this is a static v-html render with no
+// editor attached to persist a toggle — ticking one would silently revert on reload.
+const renderedContent = computed(() =>
+  (props.note.content ?? '').replace(/<input type="checkbox"/g, '<input disabled type="checkbox"')
+)
 
 function startEdit() {
   editContent.value = props.note.content ?? ''
+  editEmpty.value = !editContent.value
   editing.value = true
-  nextTick(() => {
-    editEl.value?.focus()
-    autoResize()
-  })
-}
-
-function autoResize() {
-  if (!editEl.value) return
-  editEl.value.style.height = 'auto'
-  editEl.value.style.height = `${editEl.value.scrollHeight}px`
+  nextTick(() => editEditorRef.value?.focus())
 }
 
 function cancelEdit() {
@@ -124,17 +132,17 @@ function cancelEdit() {
 }
 
 async function submitEdit() {
-  const content = editContent.value.trim()
   // Prevent saving an empty text-only note
-  if (!content && props.note.attachment_type === 'none') {
+  if (editEmpty.value && props.note.attachment_type === 'none') {
     cancelEdit()
     return
   }
   saving.value = true
   editing.value = false
   try {
-    if (content !== props.note.content) {
-      await notesStore.editNote(props.note.id, content || null)
+    const nextContent = editEmpty.value ? null : editContent.value
+    if (nextContent !== props.note.content) {
+      await notesStore.editNote(props.note.id, nextContent)
     }
   } finally {
     saving.value = false
@@ -178,6 +186,21 @@ async function confirmDelete() {
   padding: 2px;
   box-shadow: var(--shadow-md);
   z-index: 2;
+  /* Default (and touch devices, which never set .visible via hover): always shown */
+  opacity: 1;
+}
+
+@media (hover: hover) {
+  .note-actions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast);
+  }
+
+  .note-actions.visible {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .action-btn {
@@ -189,6 +212,13 @@ async function confirmDelete() {
   border-radius: var(--r-sm);
   color: var(--text-muted);
   transition: color var(--t-fast), background var(--t-fast);
+}
+
+@media (hover: none) {
+  .action-btn {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 .action-btn:hover {
@@ -217,9 +247,17 @@ async function confirmDelete() {
   gap: var(--sp-2);
 }
 
-.note-files {
+/* Images use a wrapping flex grid, kept distinct from file/voice/embed
+   attachments below, which stack in a single column instead. */
+.note-images {
   display: flex;
   flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.note-files {
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-2);
 }
 
@@ -228,6 +266,8 @@ async function confirmDelete() {
   color: var(--text-primary);
   line-height: 1.5;
   word-break: break-word;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .note-content :deep(code) {
@@ -245,21 +285,118 @@ async function confirmDelete() {
   overflow-x: auto;
 }
 
-/* ── Inline edit ── */
-.edit-textarea {
+.note-content :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.note-content :deep(ul),
+.note-content :deep(ol) {
+  padding-left: 1.4em;
+}
+
+.note-content :deep(blockquote) {
+  border-left: 3px solid var(--border-strong);
+  padding-left: var(--sp-3);
+  color: var(--text-secondary);
+}
+
+.note-content :deep(table) {
+  border-collapse: collapse;
+  table-layout: fixed;
   width: 100%;
-  min-height: 40px;
-  resize: none;
+  /* Lets a multi-column table overflow into the .note-content scroll area
+     instead of squishing every cell down to unreadable widths. !important
+     because Tiptap bakes its own inline min-width (from column-resize
+     metadata, e.g. "min-width: 75px") directly onto the <table> element. */
+  min-width: 360px !important;
+  margin: var(--sp-1) 0;
+}
+
+.note-content :deep(td),
+.note-content :deep(th) {
+  border: 1px solid var(--border-strong);
+  padding: var(--sp-1) var(--sp-2);
+  vertical-align: top;
+}
+
+.note-content :deep(th) {
+  background: var(--bg-hover);
+  font-weight: 600;
+  text-align: left;
+}
+
+.note-content :deep(ul[data-type="taskList"]) {
+  list-style: none;
+  padding-left: 0;
+}
+
+.note-content :deep(ul[data-type="taskList"] li) {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
+}
+
+.note-content :deep(ul[data-type="taskList"] li > label) {
+  flex-shrink: 0;
+  margin-top: 3px;
+  user-select: none;
+}
+
+.note-content :deep(ul[data-type="taskList"] li > div) {
+  flex: 1;
+}
+
+.note-content :deep(.link-embed-card) {
+  display: flex;
+  max-width: min(432px, 100%);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
   overflow: hidden;
+  text-decoration: none;
+  margin: var(--sp-1) 0;
+}
+
+.note-content :deep(.link-embed-card:hover) {
+  border-color: var(--border-strong);
+  text-decoration: none;
+}
+
+.note-content :deep(.link-embed-accent) {
+  width: 4px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.note-content :deep(.link-embed-body) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-3) var(--sp-4);
+  overflow: hidden;
+}
+
+.note-content :deep(.link-embed-host) {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.note-content :deep(.link-embed-url) {
+  font-size: var(--text-sm);
+  color: var(--text-link);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Inline edit ── */
+.edit-wrap {
   background: var(--bg-input);
   border: 1px solid var(--accent);
   border-radius: var(--r-md);
   padding: var(--sp-2) var(--sp-3);
-  color: var(--text-primary);
-  font-size: var(--text-base);
-  line-height: 1.5;
-  font-family: inherit;
-  outline: none;
 }
 
 .edit-actions {
@@ -322,7 +459,7 @@ async function confirmDelete() {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xl);
   padding: var(--sp-6);
-  width: 360px;
+  width: min(360px, calc(100vw - 2rem));
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);

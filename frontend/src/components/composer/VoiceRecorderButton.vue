@@ -28,7 +28,7 @@
       <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
         <rect x="4" y="4" width="16" height="16" rx="2"/>
       </svg>
-      Stop
+      <span class="rec-stop-label">Stop</span>
     </button>
   </div>
 
@@ -166,6 +166,25 @@ function discard() {
   color: var(--accent-danger);
 }
 
+@media (hover: none) {
+  .voice-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* On narrow screens the recording bar (discard + timer + pause + stop) competes
+   with the composer's other controls for space and squeezes the text editor
+   down to near-nothing. Drop it to its own full-width row instead — requires
+   .composer-row to allow wrapping, see NoteComposer.vue. */
+@media (max-width: 480px) {
+  .rec-bar {
+    flex-basis: 100%;
+    order: 10;
+    justify-content: center;
+  }
+}
+
 /* ── Recording bar ── */
 .rec-bar {
   display: flex;
@@ -227,6 +246,37 @@ function discard() {
 
 .rec-stop:hover {
   filter: brightness(1.1);
+}
+
+@media (hover: none) {
+  .rec-discard {
+    width: 34px;
+    height: 34px;
+  }
+
+  .rec-pause {
+    width: 36px;
+    height: 36px;
+  }
+
+  .rec-stop {
+    height: 36px;
+  }
+}
+
+/* The recording bar's children (discard + dot + timer + pause + "Stop" pill)
+   don't wrap; drop the "Stop" text at narrow widths so the bar keeps fitting
+   next to the file/send buttons in the composer row instead of overflowing it.
+   Width-based (not hover-based) since a narrow desktop window has the same problem. */
+@media (max-width: 420px) {
+  .rec-stop-label {
+    display: none;
+  }
+
+  .rec-stop {
+    width: 36px;
+    padding: 0;
+  }
 }
 
 /* Timer */

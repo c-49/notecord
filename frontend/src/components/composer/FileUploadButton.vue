@@ -43,6 +43,13 @@ function onFile(e) {
   cursor: not-allowed;
 }
 
+@media (hover: none) {
+  .upload-btn {
+    width: 40px;
+    height: 40px;
+  }
+}
+
 .file-input {
   display: none;
 }

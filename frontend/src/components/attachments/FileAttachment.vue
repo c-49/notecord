@@ -61,7 +61,7 @@ const fileSize = computed(() => {
   border-radius: var(--r-lg);
   text-decoration: none;
   transition: border-color var(--t-base), background var(--t-base);
-  max-width: 360px;
+  max-width: min(360px, 100%);
   cursor: pointer;
 }
 
@@ -89,6 +89,7 @@ const fileSize = computed(() => {
   gap: 2px;
   overflow: hidden;
   flex: 1;
+  min-width: 0;
 }
 
 .file-name {

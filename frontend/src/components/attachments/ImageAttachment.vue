@@ -84,18 +84,22 @@ function onKey(e) {
 
 <style scoped>
 .image-attachment {
+  position: relative;
   display: inline-block;
-  max-width: 400px;
+  width: 160px;
+  height: 160px;
+  max-width: 100%;
 }
 
 .thumb {
   display: block;
-  max-width: 400px;
-  max-height: 300px;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   border-radius: var(--r-lg);
-  object-fit: contain;
+  /* Fixed-size, cropped tile so multiple images in a note line up uniformly
+     regardless of their original aspect ratio — the lightbox still shows the
+     untouched image. */
+  object-fit: cover;
   cursor: zoom-in;
   opacity: 0;
   transition: opacity var(--t-base);
@@ -107,15 +111,20 @@ function onKey(e) {
 }
 
 .broken {
+  position: absolute;
+  inset: 0;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-3) var(--sp-4);
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-2);
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   color: var(--text-muted);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
+  text-align: center;
 }
 
 /* Lightbox */
@@ -149,6 +158,13 @@ function onKey(e) {
 
 .lightbox-close:hover {
   background: rgba(255, 255, 255, 0.2);
+}
+
+@media (hover: none) {
+  .lightbox-close {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 .lightbox-img {

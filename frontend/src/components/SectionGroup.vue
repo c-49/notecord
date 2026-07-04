@@ -13,8 +13,9 @@
         <span class="section-name">{{ section.emoji ? `${section.emoji} ` : '' }}{{ section.name }}</span>
       </button>
 
-      <!-- Hover actions -->
-      <div v-show="hovered" class="section-actions">
+      <!-- Hover actions (always in the DOM — visibility is CSS-driven so touch
+           devices, which never fire mouseenter, can still reach these) -->
+      <div class="section-actions">
         <button class="action-btn" title="Add page" @click.stop="openAddPage">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
@@ -251,6 +252,19 @@ async function confirmDelete() {
   padding-right: var(--sp-1);
 }
 
+@media (hover: hover) {
+  .section-actions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--t-fast);
+  }
+
+  .section-row:hover .section-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .action-btn {
   display: flex;
   align-items: center;
@@ -260,6 +274,13 @@ async function confirmDelete() {
   border-radius: var(--r-sm);
   color: var(--text-muted);
   transition: color var(--t-fast), background var(--t-fast);
+}
+
+@media (hover: none) {
+  .action-btn {
+    width: 32px;
+    height: 32px;
+  }
 }
 
 .action-btn:hover {
@@ -306,7 +327,7 @@ async function confirmDelete() {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xl);
   padding: var(--sp-6);
-  width: 360px;
+  width: min(360px, calc(100vw - 2rem));
   display: flex;
   flex-direction: column;
   gap: var(--sp-4);

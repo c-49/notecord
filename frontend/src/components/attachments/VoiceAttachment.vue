@@ -130,7 +130,7 @@ function formatTime(s) {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--r-2xl);
-  max-width: 320px;
+  max-width: min(320px, 100%);
 }
 
 .play-btn {
@@ -192,6 +192,30 @@ function formatTime(s) {
   background: var(--accent);
   border: none;
   cursor: pointer;
+}
+
+@media (hover: none) {
+  .play-btn {
+    width: 40px;
+    height: 40px;
+  }
+
+  /* Larger hit area for dragging the scrubber without changing its visual thickness */
+  .scrubber-input {
+    padding: 12px 0;
+    height: 4px;
+    background-clip: content-box;
+  }
+
+  .scrubber-input::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+  }
+
+  .scrubber-input::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
 }
 
 .voice-time {

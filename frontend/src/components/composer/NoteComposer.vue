@@ -1,16 +1,32 @@
 <template>
   <div class="composer">
-    <!-- Attachment chips strip -->
-    <div v-if="attachments.length" class="attachment-strip">
+    <!-- Pending attachments -->
+    <div v-if="attachments.length" class="attachments-preview">
       <span class="att-count">{{ attachments.length }}/{{ MAX_ATTACHMENTS }}</span>
-      <div v-for="(att, i) in attachments" :key="i" class="att-chip">
-        <span class="att-icon">{{ attIcon(att) }}</span>
-        <span class="att-label">{{ attLabel(att) }}</span>
-        <button class="att-remove" @click="removeAttachment(i)" aria-label="Remove attachment">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-          </svg>
-        </button>
+
+      <!-- Images get an actual thumbnail grid instead of a text chip -->
+      <div v-if="imageAttachments.length" class="image-preview-strip">
+        <div v-for="att in imageAttachments" :key="att.i" class="image-preview">
+          <img :src="att.previewUrl" alt="" />
+          <button class="image-preview-remove" @click="removeAttachment(att.i)" aria-label="Remove image">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- File/voice/embed attachments keep the text-chip treatment -->
+      <div v-if="otherAttachments.length" class="attachment-strip">
+        <div v-for="att in otherAttachments" :key="att.i" class="att-chip">
+          <span class="att-icon">{{ attIcon(att) }}</span>
+          <span class="att-label">{{ attLabel(att) }}</span>
+          <button class="att-remove" @click="removeAttachment(att.i)" aria-label="Remove attachment">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -24,15 +40,16 @@
       <!-- File upload button -->
       <FileUploadButton :disabled="attachments.length >= MAX_ATTACHMENTS" @file-selected="onFileSelected" />
 
-      <!-- Text input -->
-      <div
-        class="composer-input"
-        contenteditable="true"
-        :data-placeholder="placeholder"
-        ref="inputEl"
-        @keydown.enter.exact.prevent="submit"
-        @input="onInput"
-        @paste="onPaste"
+      <!-- Rich text input -->
+      <RichTextEditor
+        ref="editorRef"
+        v-model="htmlContent"
+        class="composer-editor"
+        :placeholder="placeholder"
+        @update:text="onTextUpdate"
+        @update:empty="(v) => (isEmpty = v)"
+        @submit="submit"
+        @image-paste="onFileSelected"
       />
 
       <!-- Voice record button -->
@@ -54,10 +71,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onBeforeUnmount } from 'vue'
 import { useNotesStore } from '@/stores/notesStore'
 import FileUploadButton from './FileUploadButton.vue'
 import VoiceRecorderButton from './VoiceRecorderButton.vue'
+import RichTextEditor from './RichTextEditor.vue'
 
 const props = defineProps({
   pageId: { type: [String, Number], required: true },
@@ -66,18 +84,28 @@ const props = defineProps({
 const MAX_ATTACHMENTS = 4
 
 const notesStore = useNotesStore()
-const inputEl = ref(null)
-const textContent = ref('')
-// Each entry: { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string }
+const editorRef = ref(null)
+const htmlContent = ref('')
+const plainText = ref('')
+const isEmpty = ref(true)
+// Each entry: { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string, previewUrl?: string }
 const attachments = ref([])
 const submitting = ref(false)
 const dragging = ref(false)
 
 const placeholder = computed(() => 'Write a note… (Enter to send, Shift+Enter for new line)')
-const canSubmit = computed(() => !submitting.value && (textContent.value.trim() || attachments.value.length > 0))
+const canSubmit = computed(() => !submitting.value && (!isEmpty.value || attachments.value.length > 0))
+
+// Keep each attachment's original index (needed by removeAttachment) alongside
+// the split-by-type view used for rendering.
+const imageAttachments = computed(() =>
+  attachments.value.map((att, i) => ({ ...att, i })).filter((att) => att.type === 'image')
+)
+const otherAttachments = computed(() =>
+  attachments.value.map((att, i) => ({ ...att, i })).filter((att) => att.type !== 'image')
+)
 
 function attIcon(att) {
-  if (att.type === 'image') return '🖼'
   if (att.type === 'voice') return '🎤'
   if (att.type === 'embed') return '🔗'
   return '📎'
@@ -98,13 +126,13 @@ function formatVoiceSize(bytes) {
     : `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function onInput() {
-  textContent.value = inputEl.value?.innerText ?? ''
+function onTextUpdate(text) {
+  plainText.value = text
 
   // Auto-detect pasted URLs → embed (only when that's the entire content)
-  const text = textContent.value.trim()
-  if (text && isUrl(text) && !attachments.value.some(a => a.type === 'embed' && a.url === text)) {
-    addAttachment({ type: 'embed', url: text })
+  const trimmed = text.trim()
+  if (trimmed && isUrl(trimmed) && !attachments.value.some(a => a.type === 'embed' && a.url === trimmed)) {
+    addAttachment({ type: 'embed', url: trimmed })
   }
 }
 
@@ -119,6 +147,9 @@ function isUrl(str) {
 
 function addAttachment(att) {
   if (attachments.value.length >= MAX_ATTACHMENTS) return
+  if (att.type === 'image' && att.file) {
+    att.previewUrl = URL.createObjectURL(att.file)
+  }
   attachments.value.push(att)
 }
 
@@ -138,40 +169,36 @@ function onDrop(e) {
   }
 }
 
-function onPaste(e) {
-  const items = Array.from(e.clipboardData?.items ?? [])
-  const imageItem = items.find((item) => item.kind === 'file' && item.type.startsWith('image/'))
-  if (imageItem) {
-    e.preventDefault()
-    const file = imageItem.getAsFile()
-    if (file) onFileSelected(file)
-    return
-  }
-  // Plain text paste — sync after browser inserts content
-  requestAnimationFrame(() => {
-    textContent.value = inputEl.value?.innerText ?? ''
-  })
+function removeAttachment(idx) {
+  const [removed] = attachments.value.splice(idx, 1)
+  if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
 }
 
-function removeAttachment(idx) {
-  attachments.value.splice(idx, 1)
+function clearAttachments() {
+  for (const att of attachments.value) {
+    if (att.previewUrl) URL.revokeObjectURL(att.previewUrl)
+  }
+  attachments.value = []
 }
 
 async function submit() {
   if (!canSubmit.value) return
   submitting.value = true
   try {
-    const content = textContent.value.trim() || null
+    const content = htmlContent.value || null
     await notesStore.addNote(props.pageId, content, attachments.value)
 
-    if (inputEl.value) inputEl.value.innerText = ''
-    textContent.value = ''
-    attachments.value = []
+    htmlContent.value = ''
+    plainText.value = ''
+    isEmpty.value = true
+    clearAttachments()
   } finally {
     submitting.value = false
-    inputEl.value?.focus()
+    editorRef.value?.focus()
   }
 }
+
+onBeforeUnmount(clearAttachments)
 </script>
 
 <style scoped>
@@ -182,12 +209,66 @@ async function submit() {
   padding: var(--sp-2) var(--sp-4) var(--sp-4);
 }
 
-/* ── Attachment chips ── */
+/* ── Pending attachments ── */
+.attachments-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2) 0;
+}
+
+.image-preview-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.image-preview {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.image-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-preview-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-full);
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  transition: background var(--t-fast);
+}
+
+.image-preview-remove:hover {
+  background: rgba(218, 55, 60, 0.9);
+}
+
+@media (hover: none) {
+  .image-preview-remove {
+    width: 24px;
+    height: 24px;
+  }
+}
+
 .attachment-strip {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
-  padding: var(--sp-2) 0 var(--sp-2);
 }
 
 .att-chip {
@@ -236,9 +317,7 @@ async function submit() {
 .att-count {
   font-size: var(--text-xs);
   color: var(--text-muted);
-  align-self: center;
-  margin-left: auto;
-  flex-shrink: 0;
+  align-self: flex-end;
 }
 
 /* ── Composer row ── */
@@ -262,23 +341,10 @@ async function submit() {
   background: rgba(88, 101, 242, 0.08);
 }
 
-.composer-input {
-  flex: 1;
-  min-height: 22px;
-  max-height: 200px;
-  overflow-y: auto;
-  outline: none;
-  font-size: var(--text-base);
-  color: var(--text-primary);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.composer-input:empty::before {
-  content: attr(data-placeholder);
-  color: var(--text-muted);
-  pointer-events: none;
+@media (max-width: 480px) {
+  .composer-row {
+    flex-wrap: wrap;
+  }
 }
 
 .send-btn {
@@ -292,6 +358,13 @@ async function submit() {
   justify-content: center;
   flex-shrink: 0;
   transition: background var(--t-base), opacity var(--t-base);
+}
+
+@media (hover: none) {
+  .send-btn {
+    width: 40px;
+    height: 40px;
+  }
 }
 
 .send-btn:hover:not(:disabled) {
