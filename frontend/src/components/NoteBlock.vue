@@ -133,7 +133,7 @@ function cancelEdit() {
 
 async function submitEdit() {
   // Prevent saving an empty text-only note
-  if (editEmpty.value && props.note.attachment_type === 'none') {
+  if (editEmpty.value && !props.note.files?.length) {
     cancelEdit()
     return
   }

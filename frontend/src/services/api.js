@@ -94,5 +94,7 @@ export async function uploadFile(file) {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function getFileUrl(fileId) {
-  return `${import.meta.env.VITE_DIRECTUS_URL}/assets/${fileId}?access_token=${import.meta.env.VITE_DIRECTUS_TOKEN}`
+  // Scoped read-only token (not the admin token) — this value ends up in every
+  // <img>/<a> src in the DOM, browser history, and disk cache.
+  return `${import.meta.env.VITE_DIRECTUS_URL}/assets/${fileId}?access_token=${import.meta.env.VITE_DIRECTUS_ASSET_TOKEN}`
 }

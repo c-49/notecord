@@ -1,5 +1,7 @@
 <template>
   <div class="composer">
+    <div v-if="submitError" class="submit-error">{{ submitError }}</div>
+
     <!-- Pending attachments -->
     <div v-if="attachments.length" class="attachments-preview">
       <span class="att-count">{{ attachments.length }}/{{ MAX_ATTACHMENTS }}</span>
@@ -72,7 +74,7 @@
 
 <script setup>
 import { ref, computed, onBeforeUnmount } from 'vue'
-import { useNotesStore } from '@/stores/notesStore'
+import { useNotesStore, AttachmentUploadError } from '@/stores/notesStore'
 import FileUploadButton from './FileUploadButton.vue'
 import VoiceRecorderButton from './VoiceRecorderButton.vue'
 import RichTextEditor from './RichTextEditor.vue'
@@ -92,6 +94,7 @@ const isEmpty = ref(true)
 const attachments = ref([])
 const submitting = ref(false)
 const dragging = ref(false)
+const submitError = ref('')
 
 const placeholder = computed(() => 'Write a note… (Enter to send, Shift+Enter for new line)')
 const canSubmit = computed(() => !submitting.value && (!isEmpty.value || attachments.value.length > 0))
@@ -181,9 +184,17 @@ function clearAttachments() {
   attachments.value = []
 }
 
+function flashError(message) {
+  submitError.value = message
+  setTimeout(() => {
+    if (submitError.value === message) submitError.value = ''
+  }, 5000)
+}
+
 async function submit() {
   if (!canSubmit.value) return
   submitting.value = true
+  submitError.value = ''
   try {
     const content = htmlContent.value || null
     await notesStore.addNote(props.pageId, content, attachments.value)
@@ -192,6 +203,18 @@ async function submit() {
     plainText.value = ''
     isEmpty.value = true
     clearAttachments()
+  } catch (err) {
+    if (err instanceof AttachmentUploadError) {
+      // The note itself was sent — only some attachments failed — so clear
+      // the composer same as a normal send, just surface what went wrong.
+      htmlContent.value = ''
+      plainText.value = ''
+      isEmpty.value = true
+      clearAttachments()
+      flashError(err.message)
+    } else {
+      flashError('Failed to send note. Please try again.')
+    }
   } finally {
     submitting.value = false
     editorRef.value?.focus()
@@ -207,6 +230,12 @@ onBeforeUnmount(clearAttachments)
   border-top: 1px solid var(--border);
   background: var(--bg-tertiary);
   padding: var(--sp-2) var(--sp-4) var(--sp-4);
+}
+
+.submit-error {
+  padding: var(--sp-1) var(--sp-1) 0;
+  font-size: var(--text-xs);
+  color: var(--accent-danger);
 }
 
 /* ── Pending attachments ── */

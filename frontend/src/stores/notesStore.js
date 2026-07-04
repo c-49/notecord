@@ -4,6 +4,18 @@ import groupBy from 'lodash/groupBy'
 import { getNotes, createNote, createNoteFile, updateNote, deleteNote, uploadFile } from '@/services/api'
 import { getDayKey } from '@/utils/dateUtils'
 
+// Thrown by addNote when the note itself was created successfully but one or
+// more of its attachments failed to upload — callers can catch this
+// specifically to tell "partially sent" apart from "nothing was sent".
+export class AttachmentUploadError extends Error {
+  constructor(failedCount, totalCount) {
+    super(`${failedCount} of ${totalCount} attachment(s) failed to upload`)
+    this.name = 'AttachmentUploadError'
+    this.failedCount = failedCount
+    this.totalCount = totalCount
+  }
+}
+
 export const useNotesStore = defineStore('notes', () => {
   const notes = ref([])
   const loading = ref(false)
@@ -29,27 +41,41 @@ export const useNotesStore = defineStore('notes', () => {
     const note = await createNote({ page_id: pageId, content })
     note.files = []
 
-    for (let i = 0; i < attachments.length; i++) {
-      const att = attachments[i]
-      let fileId = null
-
-      if (att.type !== 'embed' && att.file) {
-        const uploaded = await uploadFile(att.file)
-        fileId = uploaded.id
-      }
-
-      const noteFile = await createNoteFile({
-        note_id: note.id,
-        file_id: fileId,
-        attachment_type: att.type,
-        embed_url: att.url ?? null,
-        sort_order: i,
+    // Uploads are independent, so run them in parallel — but use allSettled
+    // (not all) so one failure can't cancel/hide the others that succeed.
+    const results = await Promise.allSettled(
+      attachments.map(async (att, i) => {
+        let fileId = null
+        if (att.type !== 'embed' && att.file) {
+          const uploaded = await uploadFile(att.file)
+          fileId = uploaded.id
+        }
+        return createNoteFile({
+          note_id: note.id,
+          file_id: fileId,
+          attachment_type: att.type,
+          embed_url: att.url ?? null,
+          sort_order: i,
+        })
       })
+    )
 
-      note.files.push(noteFile)
+    let failedCount = 0
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        note.files.push(result.value)
+      } else {
+        failedCount++
+        console.error('Attachment upload failed:', result.reason)
+      }
     }
 
     notes.value.push(note)
+
+    if (failedCount > 0) {
+      throw new AttachmentUploadError(failedCount, attachments.length)
+    }
+
     return note
   }
 

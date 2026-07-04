@@ -5,11 +5,32 @@
  * Usage:
  *   node backend/setup-schema.js
  *
- * Set DIRECTUS_URL / ADMIN_TOKEN env vars to override defaults.
+ * Set DIRECTUS_URL / ADMIN_TOKEN / ASSET_TOKEN env vars to override defaults.
  */
 
-const BASE = process.env.DIRECTUS_URL ?? 'http://localhost:8055'
-const TOKEN = process.env.ADMIN_TOKEN ?? 'notecord-dev-static-token-2026'
+const fs = require('fs')
+const path = require('path')
+const crypto = require('crypto')
+
+// This script is invoked as a bare `node setup-schema.js` (see README), so
+// nothing loads backend/.env into process.env automatically — read it directly.
+function loadEnvFile() {
+  const envPath = path.join(__dirname, '.env')
+  if (!fs.existsSync(envPath)) return {}
+  const out = {}
+  for (const line of fs.readFileSync(envPath, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    const eq = trimmed.indexOf('=')
+    if (!trimmed || trimmed.startsWith('#') || eq === -1) continue
+    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim()
+  }
+  return out
+}
+
+const envFile = loadEnvFile()
+const BASE = process.env.DIRECTUS_URL ?? envFile.DIRECTUS_URL ?? 'http://localhost:8055'
+const TOKEN = process.env.ADMIN_TOKEN ?? envFile.ADMIN_TOKEN
+const ASSET_TOKEN = process.env.ASSET_TOKEN ?? envFile.ASSET_TOKEN
 
 async function req(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
@@ -26,6 +47,12 @@ async function req(method, path, body) {
     throw new Error(`${method} ${path} → ${res.status}: ${msg}`)
   }
   return json.data ?? json
+}
+
+async function findOne(collection, filterField, filterValue) {
+  const res = await req('GET', `/${collection}?filter[${filterField}][_eq]=${encodeURIComponent(filterValue)}&limit=1`)
+  const data = res.data ?? res
+  return data[0] ?? null
 }
 
 async function collectionExists(name) {
@@ -122,6 +149,17 @@ const dateField = (field, special) => ({
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  if (!TOKEN) {
+    throw new Error(
+      'ADMIN_TOKEN is not set. Set it in backend/.env or export it before running this script.'
+    )
+  }
+  if (!ASSET_TOKEN) {
+    throw new Error(
+      'ASSET_TOKEN is not set. Set it in backend/.env or export it before running this script.'
+    )
+  }
+
   console.log(`\nConnecting to Directus at ${BASE}…\n`)
 
   // Verify connectivity
@@ -165,9 +203,9 @@ async function main() {
       primaryKey(),
       { field: 'page_id', type: 'integer', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
       textField('content'),
-      { ...stringField('attachment_type', false, 'none'), schema: { is_nullable: false, default_value: 'none' } },
-      { field: 'attachment_file', type: 'uuid', meta: { interface: 'file' }, schema: { is_nullable: true } },
-      stringField('embed_url', true),
+      // Attachments live entirely in note_files (supports multiple, mixed-type
+      // attachments per note) — a single enum on the note itself can't represent
+      // that, so whether a note "has attachments" is just `files.length > 0`.
       dateField('date_created', 'date-created'),
       dateField('date_updated', 'date-updated'),
     ],
@@ -194,7 +232,6 @@ async function main() {
 
   await createRelation('pages', 'section_id', 'sections', 'SET NULL')
   await createRelation('notes', 'page_id', 'pages', 'CASCADE')
-  await createRelation('notes', 'attachment_file', 'directus_files', 'SET NULL')
   // note_files relations — one_field:'files' registers the FK side of the O2M
   await createRelation('note_files', 'note_id', 'notes', 'CASCADE', { one_field: 'files' })
   await createRelation('note_files', 'file_id', 'directus_files', 'SET NULL')
@@ -234,9 +271,72 @@ async function main() {
     }
   }
 
+  // ── Scoped asset-reader token ───────────────────────────────────────────────
+  // getFileUrl() embeds a token in every <img>/<a> src in the DOM. Using the
+  // admin token there means the full admin credential ends up in page HTML,
+  // browser history, and disk cache. Provision a dedicated user whose token
+  // can only read directus_files, so that's the one exposed to asset URLs.
+  console.log('\nSetting up scoped asset-reader token…')
+
+  let assetRole = await findOne('roles', 'name', 'Asset Reader')
+  if (!assetRole) {
+    assetRole = await req('POST', '/roles', { name: 'Asset Reader', icon: 'image' })
+    console.log('  ✓ created role "Asset Reader"')
+  } else {
+    console.log('  ↳ role "Asset Reader" already exists, skipping')
+  }
+
+  let assetPolicy = await findOne('policies', 'name', 'Asset Read-Only')
+  if (!assetPolicy) {
+    assetPolicy = await req('POST', '/policies', {
+      name: 'Asset Read-Only',
+      icon: 'image',
+      admin_access: false,
+      app_access: false,
+    })
+    console.log('  ✓ created policy "Asset Read-Only"')
+    await req('POST', '/permissions', {
+      policy: assetPolicy.id,
+      collection: 'directus_files',
+      action: 'read',
+      fields: ['*'],
+      permissions: {},
+      validation: {},
+    })
+    console.log('  ✓ granted directus_files:read to "Asset Read-Only"')
+  } else {
+    console.log('  ↳ policy "Asset Read-Only" already exists, skipping')
+  }
+
+  const assetRoleFull = await req('GET', `/roles/${assetRole.id}`)
+  if (!assetRoleFull.policies?.length) {
+    await req('PATCH', `/roles/${assetRole.id}`, {
+      policies: { create: [{ policy: { id: assetPolicy.id } }], update: [], delete: [] },
+    })
+    console.log('  ✓ linked "Asset Read-Only" policy to "Asset Reader" role')
+  } else {
+    console.log('  ↳ "Asset Reader" role already has a policy linked, skipping')
+  }
+
+  const assetUser = await findOne('users', 'email', 'asset-reader@notecord.app')
+  if (!assetUser) {
+    await req('POST', '/users', {
+      email: 'asset-reader@notecord.app',
+      // Random, never used to log in — this account only authenticates via its static token.
+      password: crypto.randomUUID(),
+      role: assetRole.id,
+      status: 'active',
+      token: ASSET_TOKEN,
+    })
+    console.log('  ✓ created "asset-reader" service user with its static token')
+  } else {
+    console.log('  ↳ "asset-reader" service user already exists, skipping')
+  }
+
   console.log('\n✅ Schema setup complete!\n')
   console.log('Collections created: sections, pages, notes, note_files')
   console.log(`Directus admin: ${BASE}`)
+  console.log('\nSet frontend/.env VITE_DIRECTUS_ASSET_TOKEN to the same value as ASSET_TOKEN.')
 }
 
 main().catch((e) => {

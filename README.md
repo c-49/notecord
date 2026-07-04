@@ -24,9 +24,9 @@ A self-hosted personal notes app with a Discord-inspired UI. Single-user, no acc
 - Smart initial routing — auto-navigates to the first page on load
 
 ### Notes feed
-- Discord-style **floating hover toolbar** (edit + delete) that appears above each note row
-- **Inline edit** with auto-resizing textarea; Shift+Enter for newlines, Esc to cancel
-- Safe plain-text rendering (HTML-escaped, newlines → `<br>`)
+- Discord-style **floating hover toolbar** (edit + delete) that appears above each note row — always visible on touch devices, since there's no hover to reveal it
+- Rich text via **Tiptap**: bold/italic/strike/code, lists, checklists, blockquotes, tables, headings, font size, text/highlight color, and inline link-embed cards. Enter sends the note; Shift+Enter (or plain Enter inside a list/table/code block) adds a line
+- Notes are stored and rendered as Tiptap-generated HTML via `v-html` — safe because Tiptap's schema-based parser only ever serializes nodes/marks it defines, so arbitrary script tags can't make it into `content` in the first place
 - Notes grouped by day with human-readable date headers
 
 ### Attachments
@@ -61,16 +61,17 @@ notecord/
     ├── src/
     │   ├── components/
     │   │   ├── attachments/   # ImageAttachment, FileAttachment, EmbedAttachment, VoiceAttachment
-    │   │   ├── composer/      # NoteComposer, FileUploadButton, VoiceRecorderButton
+    │   │   ├── composer/      # NoteComposer, RichTextEditor (Tiptap), FileUploadButton, VoiceRecorderButton
     │   │   ├── AppShell.vue
     │   │   ├── EmojiInput.vue
     │   │   ├── NoteBlock.vue
     │   │   ├── PageListItem.vue
     │   │   ├── SectionGroup.vue
-    │   │   └── ServerSidebar.vue
+    │   │   ├── ServerSidebar.vue
+    │   │   └── ThemeCustomizer.vue
     │   ├── router/
     │   ├── services/api.js    # Directus SDK wrapper
-    │   ├── stores/            # navStore, notesStore (Pinia)
+    │   ├── stores/            # navStore, notesStore, themeStore (Pinia)
     │   └── utils/
     ├── .env                   # Directus URL + token (gitignored)
     └── .env.example
@@ -84,7 +85,7 @@ notecord/
 cd backend
 cp .env.example .env          # fill in your values
 docker compose up -d
-node setup-schema.js          # creates collections, relations, permissions
+node setup-schema.js          # creates collections, relations, permissions, and a scoped read-only asset-reader token
 ```
 
 ### 2. Start the frontend
@@ -111,12 +112,14 @@ DIRECTUS_SECRET=your_secret
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=your_admin_password
 ADMIN_TOKEN=your_static_token
+ASSET_TOKEN=your_asset_token   # scoped read-only token; setup-schema.js provisions the user it belongs to
 ```
 
 **`frontend/.env`**
 ```
 VITE_DIRECTUS_URL=http://localhost:8055
-VITE_DIRECTUS_TOKEN=your_static_token   # must match ADMIN_TOKEN above
+VITE_DIRECTUS_TOKEN=your_static_token         # must match ADMIN_TOKEN above
+VITE_DIRECTUS_ASSET_TOKEN=your_asset_token    # must match ASSET_TOKEN above — used only for file/image URLs
 ```
 
-> **Note:** `VITE_DIRECTUS_TOKEN` is embedded in the built JS. This app is designed for local/self-hosted use only — do not expose it publicly.
+> **Note:** Both tokens are embedded in the built JS — this app is designed for local/self-hosted use only, do not expose it publicly. `VITE_DIRECTUS_TOKEN` (admin) is required for CRUD from the frontend and can't avoid that exposure, but `VITE_DIRECTUS_ASSET_TOKEN` is scoped to read-only access on `directus_files`, so the token that actually ends up in every `<img>`/`<a>` `src` in the DOM, browser history, and disk cache is the low-privilege one, not the admin token.

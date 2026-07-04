@@ -72,15 +72,28 @@
       </select>
 
       <span class="rte-color-group" title="Text color">
-        <span class="rte-color-label" :style="{ borderBottomColor: textColor }">A</span>
-        <input type="color" class="rte-color" :value="textColor" title="Text color" @input="onTextColorInput" />
+        <button
+          type="button"
+          class="rte-color-label"
+          :style="{ borderBottomColor: textColor }"
+          title="Apply text color"
+          @mousedown.prevent="editor.chain().focus().setColor(textColor).run()"
+        >A</button>
+        <input type="color" class="rte-color" :value="textColor" title="Choose text color" @input="onTextColorInput" />
         <button type="button" class="rte-color-clear" title="Clear text color" @mousedown.prevent="editor.chain().focus().unsetColor().run()">✕</button>
       </span>
       <span class="rte-color-group" title="Highlight (background) color">
-        <svg class="rte-color-label" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :style="{ color: bgColor }">
-          <path d="M9 11l6-6 4 4-6 6"/><path d="M11 13l-5.5 5.5a1.5 1.5 0 0 1-2.1 0v0a1.5 1.5 0 0 1 0-2.1L9 11"/><path d="M4 20h4"/>
-        </svg>
-        <input type="color" class="rte-color" :value="bgColor" title="Highlight color" @input="onBgColorInput" />
+        <button
+          type="button"
+          class="rte-color-label"
+          title="Apply highlight color"
+          @mousedown.prevent="editor.chain().focus().setBackgroundColor(bgColor).run()"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :style="{ color: bgColor }">
+            <path d="M9 11l6-6 4 4-6 6"/><path d="M11 13l-5.5 5.5a1.5 1.5 0 0 1-2.1 0v0a1.5 1.5 0 0 1 0-2.1L9 11"/><path d="M4 20h4"/>
+          </svg>
+        </button>
+        <input type="color" class="rte-color" :value="bgColor" title="Choose highlight color" @input="onBgColorInput" />
         <button type="button" class="rte-color-clear" title="Clear highlight color" @mousedown.prevent="editor.chain().focus().unsetBackgroundColor().run()">✕</button>
       </span>
 
@@ -425,6 +438,12 @@ onBeforeUnmount(() => {
   border-bottom: 2px solid var(--text-muted);
   line-height: 1;
   padding-bottom: 1px;
+  border-radius: var(--r-sm);
+  transition: background var(--t-fast);
+}
+
+.rte-color-label:hover {
+  background: var(--bg-hover);
 }
 
 .rte-color {
