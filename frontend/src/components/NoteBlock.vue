@@ -391,6 +391,29 @@ async function confirmDelete() {
   text-overflow: ellipsis;
 }
 
+.note-content :deep(.link-embed-video) {
+  display: block;
+  max-width: min(480px, 100%);
+  margin: var(--sp-1) 0;
+}
+
+.note-content :deep(.link-embed-video-frame) {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--bg-input);
+}
+
+.note-content :deep(.link-embed-video-frame iframe) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
 /* ── Inline edit ── */
 .edit-wrap {
   background: var(--bg-input);

@@ -147,8 +147,33 @@ import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { TextStyle, Color, FontSize, BackgroundColor } from '@tiptap/extension-text-style'
 
+// A pasted URL that points at a YouTube video is rendered as a playable
+// embed instead of a plain card. The iframe src is always rebuilt from a
+// strictly-validated video ID — never the raw href — so a crafted href can
+// never smuggle an arbitrary iframe src through this.
+function getYoutubeEmbedUrl(href) {
+  let url
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  const host = url.hostname.replace(/^www\./, '')
+  let id = null
+  if (host === 'youtu.be') {
+    id = url.pathname.slice(1)
+  } else if (host === 'youtube.com' || host === 'm.youtube.com') {
+    if (url.pathname === '/watch') id = url.searchParams.get('v')
+    else if (url.pathname.startsWith('/embed/')) id = url.pathname.slice('/embed/'.length)
+    else if (url.pathname.startsWith('/shorts/')) id = url.pathname.slice('/shorts/'.length)
+  }
+  if (!id || !/^[\w-]{11}$/.test(id)) return null
+  return `https://www.youtube-nocookie.com/embed/${id}`
+}
+
 // Renders a pasted/inserted bare URL as a static card (matching the composer's
-// attachment-level embed card) instead of a plain autolinked text run.
+// attachment-level embed card) instead of a plain autolinked text run — or,
+// for a recognized video link, as a playable embed.
 const LinkEmbed = Node.create({
   name: 'linkEmbed',
   group: 'block',
@@ -156,16 +181,31 @@ const LinkEmbed = Node.create({
 
   addAttributes() {
     return {
-      href: { default: null, parseHTML: (el) => el.getAttribute('href') },
+      href: { default: null, parseHTML: (el) => el.getAttribute('href') || el.getAttribute('data-href') },
     }
   },
 
   parseHTML() {
-    return [{ tag: 'a[data-link-embed]' }]
+    return [{ tag: 'a[data-link-embed]' }, { tag: 'div[data-link-embed]' }]
   },
 
   renderHTML({ node }) {
     const href = node.attrs.href || ''
+    const embedUrl = getYoutubeEmbedUrl(href)
+    if (embedUrl) {
+      return ['div', { 'data-link-embed': '', 'data-href': href, class: 'link-embed-video' },
+        ['div', { class: 'link-embed-video-frame' },
+          ['iframe', {
+            src: embedUrl,
+            title: 'Embedded video',
+            frameborder: '0',
+            allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share',
+            referrerpolicy: 'strict-origin-when-cross-origin',
+            allowfullscreen: 'true',
+          }],
+        ],
+      ]
+    }
     let hostname = href
     try { hostname = new URL(href).hostname } catch { /* not a valid URL, show as-is */ }
     return ['a', { 'data-link-embed': '', href, target: '_blank', rel: 'noopener noreferrer', class: 'link-embed-card' },
@@ -719,5 +759,28 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rte-content :deep(.link-embed-video) {
+  display: block;
+  max-width: min(480px, 100%);
+  margin: var(--sp-1) 0;
+}
+
+.rte-content :deep(.link-embed-video-frame) {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--bg-input);
+}
+
+.rte-content :deep(.link-embed-video-frame iframe) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
 }
 </style>
