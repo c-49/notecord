@@ -134,6 +134,7 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
 import { Node } from '@tiptap/core'
+import { Fragment, Slice } from '@tiptap/pm/model'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -199,7 +200,7 @@ const editor = useEditor({
   content: props.modelValue,
   autofocus: props.autofocus ? 'end' : false,
   extensions: [
-    StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
+    StarterKit.configure({ heading: { levels: [1, 2, 3] }, link: false }),
     Link.configure({
       openOnClick: false,
       autolink: true,
@@ -221,6 +222,50 @@ const editor = useEditor({
     LinkEmbed,
   ],
   editorProps: {
+    // Plain-text clipboard data often carries a trailing (or leading) newline
+    // (e.g. Notepad, terminals), which ProseMirror otherwise turns into a
+    // phantom empty paragraph and visibly inflates the editor's height.
+    transformPastedText(text) {
+      return text.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '')
+    },
+    // HTML clipboard data (e.g. from web pages, other apps) often encodes
+    // blank lines as several stacked <br> inside one paragraph rather than
+    // as separate paragraphs, which stacks up line-height and produces a
+    // visibly huge empty block. Collapse those runs and drop paragraphs
+    // that are empty as a result, plus any leading/trailing empty ones.
+    transformPastedHTML(html) {
+      const EMPTY_P = '<p[^>]*>(?:\\s|<br\\s*/?>)*</p>'
+      return html
+        .replace(/(?:\s*<br\s*\/?>\s*){2,}/gi, '<br>')
+        .replace(new RegExp(`^(?:${EMPTY_P})+`, 'i'), '')
+        .replace(new RegExp(`(?:${EMPTY_P})+$`, 'i'), '')
+    },
+    // Last line of defense: pasting a partial selection (e.g. a single word
+    // selected and copied out of this same editor) hands ProseMirror a
+    // slice that has to be split/refitted at the copy boundary. That
+    // refitting can itself invent a stray leading/trailing hardBreak inside
+    // the boundary paragraph — an artifact that never existed in the
+    // clipboard HTML, so transformPastedHTML above can't see it. Collapse
+    // those here, on the already-parsed slice, right before it's inserted.
+    transformPasted(slice) {
+      const collapseBreaks = (fragment) => {
+        const nodes = []
+        let breakRun = 0
+        fragment.forEach((node) => {
+          if (node.type.name === 'hardBreak') {
+            breakRun += 1
+            if (breakRun > 1) return
+          } else {
+            breakRun = 0
+          }
+          nodes.push(node.content.childCount ? node.copy(collapseBreaks(node.content)) : node)
+        })
+        while (nodes.length && nodes[0].type.name === 'hardBreak') nodes.shift()
+        while (nodes.length && nodes[nodes.length - 1].type.name === 'hardBreak') nodes.pop()
+        return Fragment.fromArray(nodes)
+      }
+      return new Slice(collapseBreaks(slice.content), slice.openStart, slice.openEnd)
+    },
     handleKeyDown(_view, event) {
       if (event.key === 'Enter' && !event.shiftKey) {
         const ed = editor.value
