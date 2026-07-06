@@ -6,10 +6,12 @@ frontend/node_modules/
 .env
 backend/.env
 frontend/.env
+frontend/.env.production
 
 # Build output
 frontend/dist/
 frontend/.vite/
+frontend/.wrangler/
 
 # Logs
 *.log
