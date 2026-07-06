@@ -1,20 +1,11 @@
 <template>
   <div class="rte" :class="{ compact }">
-    <div class="rte-toolbar" v-if="editor">
+    <div class="rte-toolbar" ref="toolbarEl" v-if="editor">
       <button type="button" class="rte-btn" :class="{ active: editor.isActive('bold') }" title="Bold (Ctrl+B)" @mousedown.prevent="editor.chain().focus().toggleBold().run()">
         <span class="glyph glyph-bold">B</span>
       </button>
       <button type="button" class="rte-btn" :class="{ active: editor.isActive('italic') }" title="Italic (Ctrl+I)" @mousedown.prevent="editor.chain().focus().toggleItalic().run()">
         <span class="glyph glyph-italic">I</span>
-      </button>
-      <button type="button" class="rte-btn" :class="{ active: editor.isActive('strike') }" title="Strikethrough" @mousedown.prevent="editor.chain().focus().toggleStrike().run()">
-        <span class="glyph glyph-strike">S</span>
-      </button>
-      <button type="button" class="rte-btn" :class="{ active: editor.isActive('code') }" title="Inline code" @mousedown.prevent="editor.chain().focus().toggleCode().run()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="16 18 22 12 16 6"/>
-          <polyline points="8 6 2 12 8 18"/>
-        </svg>
       </button>
 
       <span class="rte-divider" />
@@ -35,83 +26,129 @@
           <text x="1" y="21" font-size="7" fill="currentColor" stroke="none">3</text>
         </svg>
       </button>
-      <button type="button" class="rte-btn" :class="{ active: editor.isActive('blockquote') }" title="Quote" @mousedown.prevent="editor.chain().focus().toggleBlockquote().run()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M7 7h4v4a4 4 0 0 1-4 4H6"/><path d="M15 7h4v4a4 4 0 0 1-4 4h-1"/>
-        </svg>
-      </button>
-      <button type="button" class="rte-btn" :class="{ active: editor.isActive('taskList') }" title="Checklist" @mousedown.prevent="editor.chain().focus().toggleTaskList().run()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="8 12 11 15 16 9"/>
-        </svg>
-      </button>
       <button type="button" class="rte-btn" title="Link" :class="{ active: editor.isActive('link') }" @mousedown.prevent="toggleLink">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
           <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
         </svg>
       </button>
-      <button type="button" class="rte-btn" title="Embed a link as a card" @mousedown.prevent="insertEmbed">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-        </svg>
-      </button>
 
-      <span class="rte-divider" />
-
-      <select
-        class="rte-select"
-        title="Font size"
-        :value="editor.getAttributes('textStyle').fontSize || ''"
-        @change="onFontSizeChange"
-      >
-        <option value="">Normal</option>
-        <option value="12px">Small</option>
-        <option value="20px">Large</option>
-        <option value="28px">Huge</option>
-      </select>
-
-      <span class="rte-color-group" title="Text color">
-        <button
-          type="button"
-          class="rte-color-label"
-          :style="{ borderBottomColor: textColor }"
-          title="Apply text color"
-          @mousedown.prevent="editor.chain().focus().setColor(textColor).run()"
-        >A</button>
-        <input type="color" class="rte-color" :value="textColor" title="Choose text color" @input="onTextColorInput" />
-        <button type="button" class="rte-color-clear" title="Clear text color" @mousedown.prevent="editor.chain().focus().unsetColor().run()">✕</button>
-      </span>
-      <span class="rte-color-group" title="Highlight (background) color">
-        <button
-          type="button"
-          class="rte-color-label"
-          title="Apply highlight color"
-          @mousedown.prevent="editor.chain().focus().setBackgroundColor(bgColor).run()"
+      <!-- Less-frequently-used tools. When there's room they flow inline as
+           normal toolbar buttons (Teleport disabled, plain "contents" div).
+           Once the toolbar itself gets too narrow (tracked by ResizeObserver
+           as `isNarrow`, so it reacts to the composer's actual width rather
+           than the viewport), the same markup is teleported to <body> and
+           rendered as a real modal instead — an anchored dropdown has
+           nowhere to grow on small screens and either overflows the
+           viewport or can't scroll, a modal always has room. -->
+      <Teleport to="body" :disabled="!isNarrow">
+        <div
+          v-if="!isNarrow || moreOpen"
+          class="rte-toolbar-secondary"
+          :class="{ 'is-modal': isNarrow }"
+          @click.self="isNarrow && (moreOpen = false)"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :style="{ color: bgColor }">
-            <path d="M9 11l6-6 4 4-6 6"/><path d="M11 13l-5.5 5.5a1.5 1.5 0 0 1-2.1 0v0a1.5 1.5 0 0 1 0-2.1L9 11"/><path d="M4 20h4"/>
-          </svg>
-        </button>
-        <input type="color" class="rte-color" :value="bgColor" title="Choose highlight color" @input="onBgColorInput" />
-        <button type="button" class="rte-color-clear" title="Clear highlight color" @mousedown.prevent="editor.chain().focus().unsetBackgroundColor().run()">✕</button>
-      </span>
+          <div class="rte-more-scroll">
+            <div v-if="isNarrow" class="rte-more-header">
+              <span class="rte-more-title">More formatting</span>
+              <button type="button" class="rte-more-close" aria-label="Close" @mousedown.prevent="moreOpen = false">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+              </button>
+            </div>
 
-      <span class="rte-divider" />
+            <span class="rte-divider" />
 
-      <button type="button" class="rte-btn" title="Insert table" @mousedown.prevent="editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+            <button type="button" class="rte-btn" :class="{ active: editor.isActive('strike') }" title="Strikethrough" @mousedown.prevent="editor.chain().focus().toggleStrike().run()">
+              <span class="glyph glyph-strike">S</span>
+            </button>
+            <button type="button" class="rte-btn" :class="{ active: editor.isActive('code') }" title="Inline code" @mousedown.prevent="editor.chain().focus().toggleCode().run()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="16 18 22 12 16 6"/>
+                <polyline points="8 6 2 12 8 18"/>
+              </svg>
+            </button>
+            <button type="button" class="rte-btn" :class="{ active: editor.isActive('blockquote') }" title="Quote" @mousedown.prevent="editor.chain().focus().toggleBlockquote().run()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M7 7h4v4a4 4 0 0 1-4 4H6"/><path d="M15 7h4v4a4 4 0 0 1-4 4h-1"/>
+              </svg>
+            </button>
+            <button type="button" class="rte-btn" :class="{ active: editor.isActive('taskList') }" title="Checklist" @mousedown.prevent="editor.chain().focus().toggleTaskList().run()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="8 12 11 15 16 9"/>
+              </svg>
+            </button>
+            <button type="button" class="rte-btn" title="Embed a link as a card" @mousedown.prevent="insertEmbed">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+            </button>
+
+            <span class="rte-divider" />
+
+            <select
+              class="rte-select"
+              title="Font size"
+              :value="editor.getAttributes('textStyle').fontSize || ''"
+              @change="onFontSizeChange"
+            >
+              <option value="">Normal</option>
+              <option value="12px">Small</option>
+              <option value="20px">Large</option>
+              <option value="28px">Huge</option>
+            </select>
+
+            <span class="rte-color-group" title="Text color">
+              <button
+                type="button"
+                class="rte-color-label"
+                :style="{ borderBottomColor: textColor }"
+                title="Apply text color"
+                @mousedown.prevent="editor.chain().focus().setColor(textColor).run()"
+              >A</button>
+              <input type="color" class="rte-color" :value="textColor" title="Choose text color" @input="onTextColorInput" />
+              <button type="button" class="rte-color-clear" title="Clear text color" @mousedown.prevent="editor.chain().focus().unsetColor().run()">✕</button>
+            </span>
+            <span class="rte-color-group" title="Highlight (background) color">
+              <button
+                type="button"
+                class="rte-color-label"
+                title="Apply highlight color"
+                @mousedown.prevent="editor.chain().focus().setBackgroundColor(bgColor).run()"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" :style="{ color: bgColor }">
+                  <path d="M9 11l6-6 4 4-6 6"/><path d="M11 13l-5.5 5.5a1.5 1.5 0 0 1-2.1 0v0a1.5 1.5 0 0 1 0-2.1L9 11"/><path d="M4 20h4"/>
+                </svg>
+              </button>
+              <input type="color" class="rte-color" :value="bgColor" title="Choose highlight color" @input="onBgColorInput" />
+              <button type="button" class="rte-color-clear" title="Clear highlight color" @mousedown.prevent="editor.chain().focus().unsetBackgroundColor().run()">✕</button>
+            </span>
+
+            <span class="rte-divider" />
+
+            <button type="button" class="rte-btn" title="Insert table" @mousedown.prevent="editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/>
+              </svg>
+            </button>
+
+            <template v-if="editor.isActive('table')">
+              <button type="button" class="rte-btn" title="Add column" @mousedown.prevent="editor.chain().focus().addColumnAfter().run()">+Col</button>
+              <button type="button" class="rte-btn" title="Add row" @mousedown.prevent="editor.chain().focus().addRowAfter().run()">+Row</button>
+              <button type="button" class="rte-btn" title="Delete column" @mousedown.prevent="editor.chain().focus().deleteColumn().run()">-Col</button>
+              <button type="button" class="rte-btn" title="Delete row" @mousedown.prevent="editor.chain().focus().deleteRow().run()">-Row</button>
+              <button type="button" class="rte-btn action-danger" title="Delete table" @mousedown.prevent="editor.chain().focus().deleteTable().run()">✕Tbl</button>
+            </template>
+          </div>
+        </div>
+      </Teleport>
+
+      <button v-if="isNarrow" type="button" class="rte-btn rte-more-btn" title="More formatting options" :class="{ active: moreOpen }" @mousedown.prevent="moreOpen = !moreOpen">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>
         </svg>
       </button>
-
-      <template v-if="editor.isActive('table')">
-        <button type="button" class="rte-btn" title="Add column" @mousedown.prevent="editor.chain().focus().addColumnAfter().run()">+Col</button>
-        <button type="button" class="rte-btn" title="Add row" @mousedown.prevent="editor.chain().focus().addRowAfter().run()">+Row</button>
-        <button type="button" class="rte-btn" title="Delete column" @mousedown.prevent="editor.chain().focus().deleteColumn().run()">-Col</button>
-        <button type="button" class="rte-btn" title="Delete row" @mousedown.prevent="editor.chain().focus().deleteRow().run()">-Row</button>
-        <button type="button" class="rte-btn action-danger" title="Delete table" @mousedown.prevent="editor.chain().focus().deleteTable().run()">✕Tbl</button>
-      </template>
 
       <span class="rte-spacer" />
 
@@ -132,7 +169,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Node } from '@tiptap/core'
 import { Fragment, Slice } from '@tiptap/pm/model'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
@@ -423,7 +460,35 @@ function focus() {
 
 defineExpose({ focus })
 
+const toolbarEl = ref(null)
+const moreOpen = ref(false)
+const isNarrow = ref(false)
+
+// Once the toolbar itself is too narrow for every button, the overflow
+// tools move into a real modal (see template) instead of an inline
+// dropdown — a dropdown anchored to a toolbar button has nowhere to grow
+// on small screens and either overflows the viewport or can't scroll.
+let resizeObserver
+watch(toolbarEl, (el) => {
+  resizeObserver?.disconnect()
+  if (!el) return
+  resizeObserver = new ResizeObserver(([entry]) => {
+    isNarrow.value = entry.contentRect.width < 340
+  })
+  resizeObserver.observe(el)
+}, { immediate: true })
+
+function onDocumentKeydown(e) {
+  if (e.key === 'Escape') moreOpen.value = false
+}
+
+onMounted(() => {
+  document.addEventListener('keydown', onDocumentKeydown)
+})
+
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onDocumentKeydown)
+  resizeObserver?.disconnect()
   editor.value?.destroy()
 })
 </script>
@@ -443,6 +508,95 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   gap: 2px;
   padding-bottom: 2px;
+  position: relative;
+}
+
+/* Wide toolbar: the secondary tools flow inline as ordinary flex children
+   (the wrapper divs are transparent to layout via `display: contents`). */
+.rte-toolbar-secondary,
+.rte-more-scroll {
+  display: contents;
+}
+
+.rte-more-header {
+  display: none;
+}
+
+/* Narrow toolbar: the same markup is teleported to <body> and rendered as
+   a real modal (fixed backdrop + scrollable panel) instead of an inline
+   dropdown, so it always has room to lay out and can scroll if it's tall. */
+.rte-toolbar-secondary.is-modal {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  padding: var(--sp-4);
+  z-index: 100;
+}
+
+.rte-toolbar-secondary.is-modal .rte-more-scroll {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  width: min(320px, 100%);
+  max-height: min(480px, calc(100vh - 4rem));
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  padding: var(--sp-3);
+}
+
+.rte-toolbar-secondary.is-modal .rte-divider {
+  display: none;
+}
+
+.rte-toolbar-secondary.is-modal .rte-select {
+  width: 100%;
+}
+
+.rte-toolbar-secondary.is-modal .rte-more-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding-bottom: var(--sp-2);
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rte-more-title {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.rte-more-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.rte-more-close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+@media (hover: none) {
+  .rte-more-close {
+    width: 32px;
+    height: 32px;
+  }
 }
 
 .rte-divider {
