@@ -43,12 +43,6 @@
         :key="page.id"
         :page="page"
       />
-      <button class="add-page-btn" @click="openAddPage">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-        </svg>
-        New page
-      </button>
     </nav>
 
     <!-- Modals -->
@@ -291,24 +285,6 @@ async function confirmDelete() {
 .action-danger:hover {
   color: var(--accent-danger);
   background: rgba(218, 55, 60, 0.12);
-}
-
-/* "New page" inline link at the bottom of each section */
-.add-page-btn {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3) var(--sp-1) calc(var(--sp-6) + var(--sp-2));
-  width: 100%;
-  font-size: var(--text-xs);
-  color: var(--text-muted);
-  border-radius: var(--r-sm);
-  transition: color var(--t-base), background var(--t-base);
-}
-
-.add-page-btn:hover {
-  color: var(--text-secondary);
-  background: var(--bg-hover);
 }
 
 /* Modal */
