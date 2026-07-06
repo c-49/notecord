@@ -1,7 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import groupBy from 'lodash/groupBy'
-import { getNotes, createNote, createNoteFile, updateNote, deleteNote, uploadFile } from '@/services/api'
+import { createNote, createNoteFile, updateNote, deleteNote, uploadFile } from '@/services/api'
+import { db } from '@/services/db'
+import { readNotes } from '@/services/offlineData'
 import { getDayKey } from '@/utils/dateUtils'
 
 // Thrown by addNote when the note itself was created successfully but one or
@@ -26,7 +28,10 @@ export const useNotesStore = defineStore('notes', () => {
     currentPageId.value = pageId
     notes.value = []
     try {
-      notes.value = await getNotes(pageId)
+      // Reads from the local Dexie mirror only — navStore.loadNav() already
+      // pulled the full dataset (including every page's notes) on app boot,
+      // so this never needs the network itself, online or offline.
+      notes.value = await readNotes(pageId)
     } finally {
       loading.value = false
     }
@@ -39,6 +44,7 @@ export const useNotesStore = defineStore('notes', () => {
   // attachments: array of { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string }
   async function addNote(pageId, content, attachments = []) {
     const note = await createNote({ id: crypto.randomUUID(), page_id: pageId, content })
+    await db.notes.put(note)
     note.files = []
 
     // Uploads are independent, so run them in parallel — but use allSettled
@@ -65,6 +71,7 @@ export const useNotesStore = defineStore('notes', () => {
     for (const result of results) {
       if (result.status === 'fulfilled') {
         note.files.push(result.value)
+        await db.note_files.put(result.value)
       } else {
         failedCount++
         console.error('Attachment upload failed:', result.reason)
@@ -84,11 +91,14 @@ export const useNotesStore = defineStore('notes', () => {
     await updateNote(id, { content })
     const idx = notes.value.findIndex((n) => n.id === id)
     if (idx !== -1) notes.value[idx].content = content
+    await db.notes.update(id, { content })
   }
 
   async function removeNote(id) {
     await deleteNote(id)
     notes.value = notes.value.filter((n) => n.id !== id)
+    await db.note_files.where('note_id').equals(id).delete()
+    await db.notes.delete(id)
   }
 
   function clearNotes() {

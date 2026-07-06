@@ -36,6 +36,13 @@
           </Transition>
         </div>
 
+        <!-- Connection status -->
+        <span
+          class="status-dot"
+          :class="{ online: isOnline, offline: !isOnline }"
+          :title="isOnline ? 'Online' : 'Offline — showing cached notes'"
+        />
+
         <!-- Theme customizer -->
         <button class="header-btn" aria-label="Settings" title="Customize theme" @click="showThemeCustomizer = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -135,11 +142,13 @@ import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
 import EmojiInput from '@/components/EmojiInput.vue'
 import ThemeCustomizer from '@/components/ThemeCustomizer.vue'
+import { useOnlineStatus } from '@/composables/useOnlineStatus'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
 const authStore = useAuthStore()
 const router = useRouter()
+const { isOnline } = useOnlineStatus()
 
 async function handleLogout() {
   await authStore.logout()
@@ -263,6 +272,22 @@ onUnmounted(() => {
 .header-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-full);
+  flex-shrink: 0;
+  margin: 0 var(--sp-1);
+}
+
+.status-dot.online {
+  background: var(--accent-success);
+}
+
+.status-dot.offline {
+  background: var(--accent-danger);
 }
 
 @media (hover: none) {

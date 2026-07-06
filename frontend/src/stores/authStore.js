@@ -1,6 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { login as apiLogin, logout as apiLogout, refreshSession, getCurrentUser } from '@/services/api'
+import { clearAll as clearOfflineData } from '@/services/offlineData'
+
+// Doesn't grant any real API access by itself — Directus's httpOnly
+// refresh-token cookie is the actual authority. This just lets a reload
+// with no network fall back to "was authenticated last time we could check"
+// instead of bouncing straight to the login screen (the whole point of the
+// offline-first app shell is to work with no network at all).
+const AUTH_FLAG_KEY = 'notecord-was-authenticated'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
@@ -14,13 +22,19 @@ export const useAuthStore = defineStore('auth', () => {
   function checkSession() {
     if (!sessionCheck) {
       sessionCheck = (async () => {
+        if (!navigator.onLine) {
+          status.value = localStorage.getItem(AUTH_FLAG_KEY) === '1' ? 'authenticated' : 'unauthenticated'
+          return
+        }
         try {
           await refreshSession()
           user.value = await getCurrentUser()
           status.value = 'authenticated'
+          localStorage.setItem(AUTH_FLAG_KEY, '1')
         } catch {
           user.value = null
           status.value = 'unauthenticated'
+          localStorage.removeItem(AUTH_FLAG_KEY)
         }
       })()
     }
@@ -33,6 +47,7 @@ export const useAuthStore = defineStore('auth', () => {
       await apiLogin(email, password)
       user.value = await getCurrentUser()
       status.value = 'authenticated'
+      localStorage.setItem(AUTH_FLAG_KEY, '1')
       sessionCheck = Promise.resolve()
     } catch (e) {
       error.value = 'Invalid email or password.'
@@ -46,7 +61,9 @@ export const useAuthStore = defineStore('auth', () => {
     } finally {
       user.value = null
       status.value = 'unauthenticated'
+      localStorage.removeItem(AUTH_FLAG_KEY)
       sessionCheck = Promise.resolve()
+      await clearOfflineData().catch((e) => console.error('Failed to clear offline cache on logout:', e))
     }
   }
 

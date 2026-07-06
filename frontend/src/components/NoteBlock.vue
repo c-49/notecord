@@ -130,6 +130,10 @@ const renderedContent = computed(() =>
 const contentEl = ref(null)
 
 async function enhancePinterestEmbeds() {
+  // Pinterest's widget script and the pin embed itself both require network
+  // to actually render — skip the attempt entirely offline rather than
+  // throwing from inside Pinterest's own script when it fails to load.
+  if (!navigator.onLine) return
   const container = contentEl.value
   if (!container) return
   const anchors = Array.from(container.querySelectorAll('a[data-link-embed]:not([data-pin-do])'))

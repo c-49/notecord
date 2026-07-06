@@ -80,6 +80,18 @@ export async function getNotes(pageId) {
   )
 }
 
+// Used to populate the offline Dexie mirror — unfiltered, so `limit: -1` to
+// avoid Directus's default 100-row page cap silently truncating the cache.
+export async function getAllNotes() {
+  return client.request(
+    readItems('notes', {
+      sort: ['date_created'],
+      fields: ['*', 'files.*', 'files.file_id.*'],
+      limit: -1,
+    })
+  )
+}
+
 export async function createNote(data) {
   return client.request(createItem('notes', data))
 }
