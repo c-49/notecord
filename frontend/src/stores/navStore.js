@@ -33,7 +33,7 @@ export const useNavStore = defineStore('nav', () => {
   }
 
   async function addSection(name, emoji = null) {
-    const item = await createSection({ name, emoji, sort_order: sections.value.length })
+    const item = await createSection({ id: crypto.randomUUID(), name, emoji, sort_order: sections.value.length })
     sections.value.push(item)
     return item
   }
@@ -52,7 +52,7 @@ export const useNavStore = defineStore('nav', () => {
   }
 
   async function addPage(name, sectionId = null, emoji = null) {
-    const item = await createPage({ name, emoji, section_id: sectionId, sort_order: pages.value.length })
+    const item = await createPage({ id: crypto.randomUUID(), name, emoji, section_id: sectionId, sort_order: pages.value.length })
     pages.value.push(item)
     return item
   }

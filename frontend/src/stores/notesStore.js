@@ -38,7 +38,7 @@ export const useNotesStore = defineStore('notes', () => {
 
   // attachments: array of { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string }
   async function addNote(pageId, content, attachments = []) {
-    const note = await createNote({ page_id: pageId, content })
+    const note = await createNote({ id: crypto.randomUUID(), page_id: pageId, content })
     note.files = []
 
     // Uploads are independent, so run them in parallel — but use allSettled
@@ -51,6 +51,7 @@ export const useNotesStore = defineStore('notes', () => {
           fileId = uploaded.id
         }
         return createNoteFile({
+          id: crypto.randomUUID(),
           note_id: note.id,
           file_id: fileId,
           attachment_type: att.type,
