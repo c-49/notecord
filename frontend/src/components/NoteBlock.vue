@@ -50,7 +50,7 @@
 
       <!-- Normal display -->
       <template v-else>
-        <div v-if="note.content" class="note-content" v-html="renderedContent" />
+        <div v-if="note.content" ref="contentEl" class="note-content" v-html="renderedContent" />
         <!-- Images share a wrapping flex grid so multiple photos line up together -->
         <div v-if="imageFiles.length" class="note-images">
           <AttachmentRenderer
@@ -87,9 +87,10 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick } from 'vue'
+import { ref, computed, nextTick, watch } from 'vue'
 import { formatNoteTimestamp } from '@/utils/dateUtils'
 import { useNotesStore } from '@/stores/notesStore'
+import { buildPinterestEmbeds, resolvePinterestEmbedHref } from '@/utils/pinterestWidget'
 import AttachmentRenderer from '@/components/attachments/AttachmentRenderer.vue'
 import RichTextEditor from '@/components/composer/RichTextEditor.vue'
 
@@ -119,6 +120,36 @@ const otherFiles = computed(() => (props.note.files ?? []).filter((f) => f.attac
 const renderedContent = computed(() =>
   (props.note.content ?? '').replace(/<input type="checkbox"/g, '<input disabled type="checkbox"')
 )
+
+// Pinterest has no direct iframe-embed endpoint like YouTube/TikTok — the
+// only way to render a pin is to load Pinterest's own widget script, which
+// scans the DOM for `data-pin-do` anchors and replaces them with an iframe.
+// That's only safe to run against this static v-html render, never against
+// the live ProseMirror-managed editor DOM, so link-embed cards produced by
+// the editor are plain cards for Pinterest and get upgraded here instead.
+const contentEl = ref(null)
+
+async function enhancePinterestEmbeds() {
+  const container = contentEl.value
+  if (!container) return
+  const anchors = Array.from(container.querySelectorAll('a[data-link-embed]:not([data-pin-do])'))
+  if (!anchors.length) return
+
+  const resolved = await Promise.all(
+    anchors.map(async (a) => [a, await resolvePinterestEmbedHref(a.getAttribute('href') || '')])
+  )
+  let found = false
+  for (const [a, embedHref] of resolved) {
+    if (!embedHref) continue
+    a.setAttribute('href', embedHref)
+    a.setAttribute('data-pin-do', 'embedPin')
+    a.setAttribute('data-width', '400')
+    found = true
+  }
+  if (found) buildPinterestEmbeds()
+}
+
+watch(renderedContent, () => nextTick(enhancePinterestEmbeds), { immediate: true })
 
 function startEdit() {
   editContent.value = props.note.content ?? ''
@@ -412,6 +443,15 @@ async function confirmDelete() {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+/* TikTok clips are portrait, unlike YouTube's 16:9 */
+.note-content :deep(.link-embed-video--tiktok) {
+  max-width: min(325px, 100%);
+}
+
+.note-content :deep(.link-embed-video--tiktok .link-embed-video-frame) {
+  aspect-ratio: 9 / 16;
 }
 
 /* ── Inline edit ── */

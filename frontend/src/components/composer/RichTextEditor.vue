@@ -172,6 +172,7 @@
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Node } from '@tiptap/core'
 import { Fragment, Slice } from '@tiptap/pm/model'
+import { Plugin } from '@tiptap/pm/state'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Link from '@tiptap/extension-link'
@@ -208,6 +209,35 @@ function getYoutubeEmbedUrl(href) {
   return `https://www.youtube-nocookie.com/embed/${id}`
 }
 
+// TikTok exposes a direct iframe player at /embed/v2/<id> (the same endpoint
+// their own oEmbed response embeds under the hood), so — like YouTube above —
+// this can be resolved entirely client-side with no oEmbed round-trip. Short
+// links (vm.tiktok.com/vt.tiktok.com) redirect server-side and can't be
+// resolved without following that redirect, so they fall through to the
+// plain link-preview card instead.
+function getTiktokEmbedUrl(href) {
+  let url
+  try {
+    url = new URL(href)
+  } catch {
+    return null
+  }
+  const host = url.hostname.replace(/^www\./, '')
+  if (host !== 'tiktok.com' && host !== 'm.tiktok.com') return null
+  const id = url.pathname.match(/\/video\/(\d+)/)?.[1]
+  if (!id || !/^\d{5,25}$/.test(id)) return null
+  return `https://www.tiktok.com/embed/v2/${id}`
+}
+
+// Dispatches a href to the first recognized video provider, if any.
+function getVideoEmbed(href) {
+  const youtube = getYoutubeEmbedUrl(href)
+  if (youtube) return { provider: 'youtube', embedUrl: youtube }
+  const tiktok = getTiktokEmbedUrl(href)
+  if (tiktok) return { provider: 'tiktok', embedUrl: tiktok }
+  return null
+}
+
 // Renders a pasted/inserted bare URL as a static card (matching the composer's
 // attachment-level embed card) instead of a plain autolinked text run — or,
 // for a recognized video link, as a playable embed.
@@ -228,12 +258,12 @@ const LinkEmbed = Node.create({
 
   renderHTML({ node }) {
     const href = node.attrs.href || ''
-    const embedUrl = getYoutubeEmbedUrl(href)
-    if (embedUrl) {
-      return ['div', { 'data-link-embed': '', 'data-href': href, class: 'link-embed-video' },
+    const embed = getVideoEmbed(href)
+    if (embed) {
+      return ['div', { 'data-link-embed': '', 'data-href': href, class: `link-embed-video link-embed-video--${embed.provider}` },
         ['div', { class: 'link-embed-video-frame' },
           ['iframe', {
-            src: embedUrl,
+            src: embed.embedUrl,
             title: 'Embedded video',
             frameborder: '0',
             allow: 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share',
@@ -251,6 +281,45 @@ const LinkEmbed = Node.create({
         ['span', { class: 'link-embed-host' }, hostname],
         ['span', { class: 'link-embed-url' }, href],
       ],
+    ]
+  },
+
+  // Fallback for platforms where a paste never surfaces as a real `paste` DOM
+  // event with readable clipboardData — notably some mobile browsers, which
+  // deliver pasted text as a plain text insertion indistinguishable (to the
+  // DOM) from typing. handlePaste above never sees that, so the URL would
+  // otherwise sit there as a normal autolinked hyperlink with no embed. This
+  // watches for a paragraph whose *entire* content becomes a bare URL in one
+  // sizeable insertion — gated on insertion size so that typing a URL out
+  // character-by-character doesn't get yanked into an atom node mid-typing,
+  // since every partial prefix of a URL still parses as a valid URL.
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        appendTransaction(transactions, _oldState, newState) {
+          if (!transactions.some((tr) => tr.docChanged)) return null
+          const pastedLikely = transactions.some((tr) =>
+            tr.getMeta('paste') ||
+            tr.getMeta('uiEvent') === 'paste' ||
+            tr.steps.some((step) => step.slice && step.slice.content.size > 8)
+          )
+          if (!pastedLikely) return null
+
+          let match = null
+          newState.doc.descendants((node, pos) => {
+            if (match || node.type.name !== 'paragraph') return
+            if (node.childCount !== 1 || !node.firstChild.isText) return
+            const text = node.firstChild.text
+            if (text === text.trim() && isUrl(text)) match = { pos, node }
+          })
+          if (!match) return null
+          return newState.tr.replaceWith(
+            match.pos,
+            match.pos + match.node.nodeSize,
+            newState.schema.nodes.linkEmbed.create({ href: match.node.firstChild.text })
+          )
+        },
+      }),
     ]
   },
 })
@@ -936,5 +1005,14 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   border: none;
+}
+
+/* TikTok clips are portrait, unlike YouTube's 16:9 */
+.rte-content :deep(.link-embed-video--tiktok) {
+  max-width: min(325px, 100%);
+}
+
+.rte-content :deep(.link-embed-video--tiktok .link-embed-video-frame) {
+  aspect-ratio: 9 / 16;
 }
 </style>

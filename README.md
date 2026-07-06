@@ -99,6 +99,8 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173).
 
+Pinterest `pin.it` link previews need the small resolver Worker (`worker.js`) running alongside — `npm run worker:dev` in a second terminal (Vite proxies `/api/*` to it at `localhost:8787`). Not needed for anything else; production serves it from the same Worker as the static app, no proxy involved.
+
 The Directus admin panel is at [http://localhost:8055](http://localhost:8055).
 
 ### Environment variables
