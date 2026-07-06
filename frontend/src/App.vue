@@ -1,9 +1,9 @@
 <template>
-  <AppShell />
+  <RouterView />
 </template>
 
 <script setup>
-import AppShell from '@/components/AppShell.vue'
+import { RouterView } from 'vue-router'
 import { useThemeStore } from '@/stores/themeStore'
 
 // Instantiating the store applies any saved color overrides immediately,

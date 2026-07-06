@@ -31,6 +31,8 @@ const envFile = loadEnvFile()
 const BASE = process.env.DIRECTUS_URL ?? envFile.DIRECTUS_URL ?? 'http://localhost:8055'
 const TOKEN = process.env.ADMIN_TOKEN ?? envFile.ADMIN_TOKEN
 const ASSET_TOKEN = process.env.ASSET_TOKEN ?? envFile.ASSET_TOKEN
+const APP_USER_EMAIL = process.env.APP_USER_EMAIL ?? envFile.APP_USER_EMAIL
+const APP_USER_PASSWORD = process.env.APP_USER_PASSWORD ?? envFile.APP_USER_PASSWORD
 
 async function req(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
@@ -157,6 +159,11 @@ async function main() {
   if (!ASSET_TOKEN) {
     throw new Error(
       'ASSET_TOKEN is not set. Set it in backend/.env or export it before running this script.'
+    )
+  }
+  if (!APP_USER_EMAIL || !APP_USER_PASSWORD) {
+    throw new Error(
+      'APP_USER_EMAIL / APP_USER_PASSWORD is not set. Set them in backend/.env or export before running this script.'
     )
   }
 
@@ -333,10 +340,73 @@ async function main() {
     console.log('  ↳ "asset-reader" service user already exists, skipping')
   }
 
+  // ── App login role/policy/user ──────────────────────────────────────────────
+  // The frontend used to authenticate every request with the admin token — a
+  // single shared credential with full Directus admin access baked into the
+  // Vite build. This provisions a real login account instead, scoped to only
+  // what the app actually does (CRUD on its own collections + file uploads),
+  // with no admin_access/app_access so it can never reach the Directus admin app.
+  console.log('\nSetting up app login role/policy/user…')
+
+  let appRole = await findOne('roles', 'name', 'NoteCord User')
+  if (!appRole) {
+    appRole = await req('POST', '/roles', { name: 'NoteCord User', icon: 'person', admin_access: false, app_access: false })
+    console.log('  ✓ created role "NoteCord User"')
+  } else {
+    console.log('  ↳ role "NoteCord User" already exists, skipping')
+  }
+
+  let appPolicy = await findOne('policies', 'name', 'NoteCord App Access')
+  if (!appPolicy) {
+    appPolicy = await req('POST', '/policies', {
+      name: 'NoteCord App Access',
+      icon: 'person',
+      admin_access: false,
+      app_access: false,
+    })
+    console.log('  ✓ created policy "NoteCord App Access"')
+    for (const collection of userCollections) {
+      for (const action of actions) {
+        await req('POST', '/permissions', { policy: appPolicy.id, collection, action, fields: '*' })
+      }
+    }
+    console.log(`  ✓ granted CRUD on ${userCollections.join(', ')} to "NoteCord App Access"`)
+    for (const action of ['create', 'read']) {
+      await req('POST', '/permissions', { policy: appPolicy.id, collection: 'directus_files', action, fields: '*' })
+    }
+    console.log('  ✓ granted directus_files:create/read to "NoteCord App Access"')
+  } else {
+    console.log('  ↳ policy "NoteCord App Access" already exists, skipping')
+  }
+
+  const appRoleFull = await req('GET', `/roles/${appRole.id}`)
+  if (!appRoleFull.policies?.length) {
+    await req('PATCH', `/roles/${appRole.id}`, {
+      policies: { create: [{ policy: { id: appPolicy.id } }], update: [], delete: [] },
+    })
+    console.log('  ✓ linked "NoteCord App Access" policy to "NoteCord User" role')
+  } else {
+    console.log('  ↳ "NoteCord User" role already has a policy linked, skipping')
+  }
+
+  const appUser = await findOne('users', 'email', APP_USER_EMAIL)
+  if (!appUser) {
+    await req('POST', '/users', {
+      email: APP_USER_EMAIL,
+      password: APP_USER_PASSWORD,
+      role: appRole.id,
+      status: 'active',
+    })
+    console.log(`  ✓ created app login user "${APP_USER_EMAIL}"`)
+  } else {
+    console.log(`  ↳ app login user "${APP_USER_EMAIL}" already exists, skipping`)
+  }
+
   console.log('\n✅ Schema setup complete!\n')
   console.log('Collections created: sections, pages, notes, note_files')
   console.log(`Directus admin: ${BASE}`)
   console.log('\nSet frontend/.env VITE_DIRECTUS_ASSET_TOKEN to the same value as ASSET_TOKEN.')
+  console.log(`Log into the app with APP_USER_EMAIL (${APP_USER_EMAIL}) / APP_USER_PASSWORD.`)
 }
 
 main().catch((e) => {

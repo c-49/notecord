@@ -1,8 +1,9 @@
 import {
   createDirectus,
   rest,
-  staticToken,
+  authentication,
   readItems,
+  readMe,
   createItem,
   updateItem,
   deleteItem,
@@ -10,8 +11,26 @@ import {
 } from '@directus/sdk'
 
 const client = createDirectus(import.meta.env.VITE_DIRECTUS_URL)
-  .with(staticToken(import.meta.env.VITE_DIRECTUS_TOKEN))
+  .with(authentication('cookie', { credentials: 'include' }))
   .with(rest())
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export async function login(email, password) {
+  return client.login({ email, password })
+}
+
+export async function logout() {
+  return client.logout()
+}
+
+export async function refreshSession() {
+  return client.refresh()
+}
+
+export async function getCurrentUser() {
+  return client.request(readMe())
+}
 
 // ── Sections ──────────────────────────────────────────────────────────────────
 

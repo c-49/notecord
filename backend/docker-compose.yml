@@ -38,7 +38,10 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       CORS_ENABLED: "true"
       CORS_ORIGIN: "http://localhost:5173"
+      CORS_CREDENTIALS: "true"
       PUBLIC_URL: "http://localhost:8055"
+      REFRESH_TOKEN_COOKIE_SECURE: ${REFRESH_TOKEN_COOKIE_SECURE}
+      REFRESH_TOKEN_COOKIE_SAME_SITE: ${REFRESH_TOKEN_COOKIE_SAME_SITE}
 
 volumes:
   postgres_data:

@@ -44,6 +44,15 @@
           </svg>
         </button>
 
+        <!-- Log out -->
+        <button class="header-btn" aria-label="Log out" title="Log out" @click="handleLogout">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+            <polyline points="16 17 21 12 16 7"/>
+            <line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
+
         <!-- Mobile close -->
         <button class="header-btn close-btn" aria-label="Close sidebar" @click="emit('close')">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -120,6 +129,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useNavStore } from '@/stores/navStore'
+import { useAuthStore } from '@/stores/authStore'
 import { useRouter } from 'vue-router'
 import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
@@ -128,7 +138,13 @@ import ThemeCustomizer from '@/components/ThemeCustomizer.vue'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
+const authStore = useAuthStore()
 const router = useRouter()
+
+async function handleLogout() {
+  await authStore.logout()
+  router.push({ name: 'login' })
+}
 
 const showThemeCustomizer = ref(false)
 const dropdownOpen = ref(false)
