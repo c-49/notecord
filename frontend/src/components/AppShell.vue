@@ -24,7 +24,9 @@
       <RouterView />
     </main>
 
-    <SearchSidebar v-if="searchStore.active" />
+    <Transition name="search-slide">
+      <SearchSidebar v-if="searchStore.active" />
+    </Transition>
   </div>
 </template>
 

@@ -328,4 +328,15 @@ onUnmounted(() => debouncedSearch.cancel())
     width: 100%;
   }
 }
+
+/* Slide-in animation, matching the left sidebar's mobile transform/timing */
+.search-slide-enter-active,
+.search-slide-leave-active {
+  transition: transform var(--t-slow);
+}
+
+.search-slide-enter-from,
+.search-slide-leave-to {
+  transform: translateX(100%);
+}
 </style>
