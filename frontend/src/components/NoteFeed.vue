@@ -9,6 +9,18 @@
     </div>
 
     <template v-else>
+      <div v-if="!(notesStore.exhaustedServerHistory && !notesStore.hasMore)" class="load-more-wrap">
+        <button
+          v-if="notesStore.hasMore || isOnline"
+          class="load-more-btn"
+          :disabled="notesStore.loadingMore"
+          @click="notesStore.loadMore()"
+        >
+          {{ notesStore.loadingMore ? 'Loading…' : 'Load earlier notes' }}
+        </button>
+        <span v-else class="load-more-offline-hint">Older notes aren't available offline</span>
+      </div>
+
       <template v-for="(dayNotes, dayKey) in groupedNotes" :key="dayKey">
         <div class="day-divider">
           <span>{{ formatDayDivider(dayNotes[0].date_created) }}</span>
@@ -24,8 +36,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onMounted } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useNotesStore } from '@/stores/notesStore'
+import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import { formatDayDivider } from '@/utils/dateUtils'
 import NoteBlock from '@/components/NoteBlock.vue'
 
@@ -34,6 +47,7 @@ const props = defineProps({
 })
 
 const notesStore = useNotesStore()
+const { isOnline } = useOnlineStatus()
 const feedEl = ref(null)
 
 const groupedNotes = computed(() => notesStore.notesByDay())
@@ -44,15 +58,34 @@ watch(() => props.pageId, async (id) => {
   scrollToBottom()
 }, { immediate: true })
 
-watch(() => notesStore.notes.length, async () => {
-  await nextTick()
-  scrollToBottom()
+// Distinguish a genuinely new note (appended at the end — scroll to it) from
+// "Load earlier notes" revealing older ones (prepended at the start — keep
+// whatever the user was looking at in the same visual spot, don't yank them
+// down to the bottom the moment they asked to see older content).
+watch(() => notesStore.notes, (newNotes, oldNotes) => {
+  const oldLastId = oldNotes?.[oldNotes.length - 1]?.id
+  const newLastId = newNotes?.[newNotes.length - 1]?.id
+  if (newLastId !== oldLastId) {
+    nextTick(scrollToBottom)
+  } else if (newNotes.length > (oldNotes?.length ?? 0)) {
+    preserveScrollPosition()
+  }
 })
 
 function scrollToBottom() {
   if (feedEl.value) {
     feedEl.value.scrollTop = feedEl.value.scrollHeight
   }
+}
+
+function preserveScrollPosition() {
+  const el = feedEl.value
+  if (!el) return
+  const prevHeight = el.scrollHeight
+  const prevScrollTop = el.scrollTop
+  nextTick(() => {
+    el.scrollTop = prevScrollTop + (el.scrollHeight - prevHeight)
+  })
 }
 </script>
 
@@ -76,6 +109,40 @@ function scrollToBottom() {
 
 .feed-empty p {
   text-align: center;
+}
+
+.load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-2) var(--sp-4) var(--sp-4);
+}
+
+.load-more-btn {
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-full);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  transition: background var(--t-base), border-color var(--t-base), color var(--t-base);
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+.load-more-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.load-more-offline-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 .day-divider {

@@ -1,41 +1,89 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import groupBy from 'lodash/groupBy'
-import { createNote, createNoteFile, updateNote, deleteNote, uploadFile } from '@/services/api'
 import { db } from '@/services/db'
 import { readNotes } from '@/services/offlineData'
+import { getOlderNotes } from '@/services/api'
+import { queueMutation, requestDrain, lastSyncedAt } from '@/services/mutationQueue'
 import { getDayKey } from '@/utils/dateUtils'
 
-// Thrown by addNote when the note itself was created successfully but one or
-// more of its attachments failed to upload — callers can catch this
-// specifically to tell "partially sent" apart from "nothing was sent".
-export class AttachmentUploadError extends Error {
-  constructor(failedCount, totalCount) {
-    super(`${failedCount} of ${totalCount} attachment(s) failed to upload`)
-    this.name = 'AttachmentUploadError'
-    this.failedCount = failedCount
-    this.totalCount = totalCount
-  }
-}
+const PAGE_SIZE = 30
 
 export const useNotesStore = defineStore('notes', () => {
-  const notes = ref([])
+  // Full, ascending-by-date_created list for the current page — cached
+  // locally for offline access (capped to the most recent ~200, see
+  // offlineData.js), extended further back on demand by loadMore() while
+  // online. Every mutation below operates on this, never on the `notes`
+  // computed exposed to components.
+  const allNotes = ref([])
+  const visibleCount = ref(PAGE_SIZE)
   const loading = ref(false)
+  const loadingMore = ref(false)
   const currentPageId = ref(null)
+  // True once loadMore() has confirmed there's genuinely nothing older left
+  // on the server for this page — reset whenever the page changes.
+  const exhaustedServerHistory = ref(false)
+
+  // The visible window — most recent `visibleCount` notes, oldest first
+  // (matches the chat-style feed's top-to-bottom order).
+  const notes = computed(() => allNotes.value.slice(-visibleCount.value))
+  const hasMore = computed(() => visibleCount.value < allNotes.value.length)
 
   async function loadNotes(pageId) {
     loading.value = true
     currentPageId.value = pageId
-    notes.value = []
+    visibleCount.value = PAGE_SIZE
+    exhaustedServerHistory.value = false
+    allNotes.value = []
     try {
       // Reads from the local Dexie mirror only — navStore.loadNav() already
-      // pulled the full dataset (including every page's notes) on app boot,
-      // so this never needs the network itself, online or offline.
-      notes.value = await readNotes(pageId)
+      // pulled each page's recent notes on app boot, so this never needs
+      // the network itself, online or offline.
+      allNotes.value = await readNotes(pageId)
     } finally {
       loading.value = false
     }
   }
+
+  // Reveals more of what's already cached locally (instant); once that's
+  // exhausted, tries extending the cache further back from Directus — only
+  // possible while online, since offline access is capped to what's already
+  // synced ("right here, right now", not deep history).
+  async function loadMore() {
+    if (hasMore.value) {
+      visibleCount.value = Math.min(visibleCount.value + PAGE_SIZE, allNotes.value.length)
+      return
+    }
+    if (exhaustedServerHistory.value || !navigator.onLine) return
+    loadingMore.value = true
+    try {
+      const oldest = allNotes.value[0]
+      const older = await getOlderNotes(currentPageId.value, oldest?.date_created, PAGE_SIZE)
+      if (!older.length) {
+        exhaustedServerHistory.value = true
+        return
+      }
+      const ascending = [...older].reverse()
+      const noteRows = ascending.map(({ files, ...n }) => n)
+      const fileRows = ascending.flatMap((n) => n.files ?? [])
+      await db.transaction('rw', db.notes, db.note_files, async () => {
+        await db.notes.bulkPut(noteRows)
+        if (fileRows.length) await db.note_files.bulkPut(fileRows)
+      })
+      allNotes.value = [...ascending, ...allNotes.value]
+      visibleCount.value += ascending.length
+    } finally {
+      loadingMore.value = false
+    }
+  }
+
+  // Lightweight re-read used after the mutation queue drains something (e.g.
+  // a deferred attachment upload resolving to a real file_id) — unlike
+  // loadNotes(), doesn't reset to an empty list first, so it doesn't flash
+  // the empty state on every background sync.
+  watch(lastSyncedAt, async () => {
+    if (currentPageId.value) allNotes.value = await readNotes(currentPageId.value)
+  })
 
   function notesByDay() {
     return groupBy(notes.value, (n) => getDayKey(n.date_created))
@@ -43,75 +91,105 @@ export const useNotesStore = defineStore('notes', () => {
 
   // attachments: array of { type: 'image'|'file'|'voice'|'embed', file?: File, url?: string }
   async function addNote(pageId, content, attachments = []) {
-    const note = await createNote({ id: crypto.randomUUID(), page_id: pageId, content })
-    await db.notes.put(note)
-    note.files = []
+    const id = crypto.randomUUID()
+    const localRow = { id, page_id: pageId, content, date_created: new Date().toISOString(), date_updated: null }
 
-    // Uploads are independent, so run them in parallel — but use allSettled
-    // (not all) so one failure can't cancel/hide the others that succeed.
-    const results = await Promise.allSettled(
-      attachments.map(async (att, i) => {
-        let fileId = null
-        if (att.type !== 'embed' && att.file) {
-          const uploaded = await uploadFile(att.file)
-          fileId = uploaded.id
-        }
-        return createNoteFile({
-          id: crypto.randomUUID(),
-          note_id: note.id,
-          file_id: fileId,
-          attachment_type: att.type,
-          embed_url: att.url ?? null,
-          sort_order: i,
-        })
-      })
-    )
+    // Build every attachment row up front and push ONE fully-formed note —
+    // pushing an empty `files: []` first and mutating it afterward is a Vue
+    // reactivity trap: pushing a plain object into a reactive array wraps it
+    // in a new proxy, but a variable captured before the push still points
+    // at the raw (unwrapped) object, so later mutations through it are
+    // invisible to the renderer. Only surfaced when offline, since the
+    // online path happened to mask it with a fast full re-read afterward.
+    const fileRows = attachments.map((att, i) => {
+      const noteFileId = crypto.randomUUID()
+      if (att.type === 'embed') {
+        return { id: noteFileId, note_id: id, file_id: null, attachment_type: 'embed', embed_url: att.url ?? null, sort_order: i }
+      }
+      // Needs an actual upload before the note_files row can exist
+      // server-side — queued as a distinct 'upload' mutation type (see
+      // mutationQueue.js) that uploads the blob, then creates the record.
+      // Shown instantly via a local blob preview in the meantime.
+      return {
+        id: noteFileId,
+        note_id: id,
+        file_id: null,
+        attachment_type: att.type,
+        embed_url: null,
+        sort_order: i,
+        _pendingFile: att.file,
+        _previewUrl: URL.createObjectURL(att.file),
+      }
+    })
 
-    let failedCount = 0
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        note.files.push(result.value)
-        await db.note_files.put(result.value)
+    allNotes.value.push({ ...localRow, files: fileRows })
+    // A new note is always the most recent — keep it inside the visible
+    // window even if the page was scrolled back to view older notes.
+    visibleCount.value += 1
+    // Capture the actual reactive proxy Vue just wrapped the pushed object
+    // in — re-deriving "last element" after the awaits below would be wrong
+    // if something else (e.g. the lastSyncedAt watcher) reassigns allNotes
+    // in the meantime.
+    const pushedNote = allNotes.value[allNotes.value.length - 1]
+
+    await db.notes.put(localRow)
+    // date_created/date_updated are server-assigned (readonly special
+    // fields) — only send what the server actually accepts, same as before.
+    await queueMutation('create', 'notes', id, { id, page_id: pageId, content })
+
+    if (fileRows.length) await db.note_files.bulkPut(fileRows)
+    for (const [i, att] of attachments.entries()) {
+      const row = fileRows[i]
+      if (att.type === 'embed') {
+        await queueMutation('create', 'note_files', row.id, row)
       } else {
-        failedCount++
-        console.error('Attachment upload failed:', result.reason)
+        await queueMutation('upload', 'note_files', row.id, {
+          note_id: id,
+          attachment_type: att.type,
+          sort_order: i,
+          file: att.file,
+        })
       }
     }
 
-    notes.value.push(note)
-
-    if (failedCount > 0) {
-      throw new AttachmentUploadError(failedCount, attachments.length)
-    }
-
-    return note
+    requestDrain()
+    return pushedNote
   }
 
   async function editNote(id, content) {
-    await updateNote(id, { content })
-    const idx = notes.value.findIndex((n) => n.id === id)
-    if (idx !== -1) notes.value[idx].content = content
+    const idx = allNotes.value.findIndex((n) => n.id === id)
+    if (idx !== -1) allNotes.value[idx].content = content
     await db.notes.update(id, { content })
+    await queueMutation('update', 'notes', id, { content })
+    requestDrain()
   }
 
   async function removeNote(id) {
-    await deleteNote(id)
-    notes.value = notes.value.filter((n) => n.id !== id)
-    await db.note_files.where('note_id').equals(id).delete()
-    await db.notes.delete(id)
+    allNotes.value = allNotes.value.filter((n) => n.id !== id)
+    const deletedAt = new Date().toISOString()
+    await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+    await db.notes.update(id, { deleted_at: deletedAt })
+    await queueMutation('delete', 'notes', id, null)
+    requestDrain()
   }
 
   function clearNotes() {
-    notes.value = []
+    allNotes.value = []
+    visibleCount.value = PAGE_SIZE
+    exhaustedServerHistory.value = false
     currentPageId.value = null
   }
 
   return {
     notes,
+    hasMore,
     loading,
+    loadingMore,
+    exhaustedServerHistory,
     currentPageId,
     notesByDay,
     loadNotes,
+    loadMore,
     addNote,
     editNote,
     removeNote,

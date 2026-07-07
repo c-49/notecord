@@ -37,12 +37,14 @@ const fileId = computed(() => {
   return typeof f === 'string' ? f : f?.id
 })
 
-const fileUrl = computed(() => getFileUrl(fileId.value))
+// While an attachment's upload is still queued (offline or in progress),
+// there's no real Directus file yet — show the local blob instead.
+const fileUrl = computed(() => props.noteFile._previewUrl ?? getFileUrl(fileId.value))
 
-const fileName = computed(() => fileObj.value?.filename_download ?? 'Download file')
+const fileName = computed(() => fileObj.value?.filename_download ?? props.noteFile._pendingFile?.name ?? 'Download file')
 
 const fileSize = computed(() => {
-  const bytes = fileObj.value?.filesize
+  const bytes = fileObj.value?.filesize ?? props.noteFile._pendingFile?.size
   if (!bytes) return null
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`

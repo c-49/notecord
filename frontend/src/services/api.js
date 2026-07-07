@@ -70,24 +70,31 @@ export async function deletePage(id) {
 
 // ── Notes ─────────────────────────────────────────────────────────────────────
 
-export async function getNotes(pageId) {
+// Used to populate the offline Dexie mirror — only the most recent `limit`
+// notes per page are cached for offline access (see offlineData.js), not
+// the entire history, so this stays cheap regardless of how large a page's
+// note history grows.
+export async function getRecentNotes(pageId, limit) {
   return client.request(
     readItems('notes', {
       filter: { page_id: { _eq: pageId } },
-      sort: ['date_created'],
+      sort: ['-date_created'],
       fields: ['*', 'files.*', 'files.file_id.*'],
+      limit,
     })
   )
 }
 
-// Used to populate the offline Dexie mirror — unfiltered, so `limit: -1` to
-// avoid Directus's default 100-row page cap silently truncating the cache.
-export async function getAllNotes() {
+// Used by "Load earlier notes" once the local cache is exhausted — fetches
+// further back directly from Directus (online only; there's no offline
+// fallback for notes older than what's cached).
+export async function getOlderNotes(pageId, beforeDate, limit) {
   return client.request(
     readItems('notes', {
-      sort: ['date_created'],
+      filter: { page_id: { _eq: pageId }, date_created: { _lt: beforeDate } },
+      sort: ['-date_created'],
       fields: ['*', 'files.*', 'files.file_id.*'],
-      limit: -1,
+      limit,
     })
   )
 }

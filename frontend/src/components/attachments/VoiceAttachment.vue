@@ -46,7 +46,10 @@ const currentTime = ref(0)
 const duration = ref(0)
 let seekingForDuration = false
 
+// While an attachment's upload is still queued (offline or in progress),
+// there's no real Directus file yet — play from the local blob instead.
 const audioUrl = computed(() => {
+  if (props.noteFile._previewUrl) return props.noteFile._previewUrl
   const f = props.noteFile.file_id
   const id = typeof f === 'string' ? f : f?.id
   return getFileUrl(id)

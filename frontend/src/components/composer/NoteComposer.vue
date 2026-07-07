@@ -74,7 +74,7 @@
 
 <script setup>
 import { ref, computed, onBeforeUnmount } from 'vue'
-import { useNotesStore, AttachmentUploadError } from '@/stores/notesStore'
+import { useNotesStore } from '@/stores/notesStore'
 import FileUploadButton from './FileUploadButton.vue'
 import VoiceRecorderButton from './VoiceRecorderButton.vue'
 import RichTextEditor from './RichTextEditor.vue'
@@ -197,6 +197,8 @@ async function submit() {
   submitError.value = ''
   try {
     const content = htmlContent.value || null
+    // Writes locally and queues sync immediately — never throws for a
+    // connectivity/upload reason, since those are retried in the background.
     await notesStore.addNote(props.pageId, content, attachments.value)
 
     htmlContent.value = ''
@@ -204,17 +206,7 @@ async function submit() {
     isEmpty.value = true
     clearAttachments()
   } catch (err) {
-    if (err instanceof AttachmentUploadError) {
-      // The note itself was sent — only some attachments failed — so clear
-      // the composer same as a normal send, just surface what went wrong.
-      htmlContent.value = ''
-      plainText.value = ''
-      isEmpty.value = true
-      clearAttachments()
-      flashError(err.message)
-    } else {
-      flashError('Failed to send note. Please try again.')
-    }
+    flashError('Failed to send note. Please try again.')
   } finally {
     submitting.value = false
     editorRef.value?.focus()

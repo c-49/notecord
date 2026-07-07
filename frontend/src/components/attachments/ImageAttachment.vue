@@ -58,7 +58,9 @@ const altText = computed(() => {
   return (typeof f === 'object' ? f?.filename_download : null) ?? 'image'
 })
 
-const fileUrl = computed(() => getFileUrl(fileId.value))
+// While an attachment's upload is still queued (offline or in progress),
+// there's no real Directus file yet — show the local blob preview instead.
+const fileUrl = computed(() => props.noteFile._previewUrl ?? getFileUrl(fileId.value))
 
 // Reset state when file changes
 watch(fileId, () => {

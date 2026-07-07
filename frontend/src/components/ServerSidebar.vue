@@ -1,7 +1,10 @@
 <template>
   <aside class="sidebar">
     <div class="sidebar-header">
-      <span class="app-name">NoteCord</span>
+      <div class="app-name-wrap">
+        <span class="app-name">NoteCord</span>
+        <span class="status-dot" :class="statusClass" :title="statusTitle" />
+      </div>
 
       <div class="header-actions">
         <!-- Dropdown trigger -->
@@ -35,13 +38,6 @@
             </div>
           </Transition>
         </div>
-
-        <!-- Connection status -->
-        <span
-          class="status-dot"
-          :class="{ online: isOnline, offline: !isOnline }"
-          :title="isOnline ? 'Online' : 'Offline — showing cached notes'"
-        />
 
         <!-- Theme customizer -->
         <button class="header-btn" aria-label="Settings" title="Customize theme" @click="showThemeCustomizer = true">
@@ -143,12 +139,25 @@ import PageListItem from '@/components/PageListItem.vue'
 import EmojiInput from '@/components/EmojiInput.vue'
 import ThemeCustomizer from '@/components/ThemeCustomizer.vue'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
+import { pendingCount } from '@/services/mutationQueue'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
 const authStore = useAuthStore()
 const router = useRouter()
 const { isOnline } = useOnlineStatus()
+
+const statusClass = computed(() => {
+  if (!isOnline.value) return 'offline'
+  return pendingCount.value > 0 ? 'syncing' : 'online'
+})
+
+const statusTitle = computed(() => {
+  if (!isOnline.value) return 'Offline — showing cached notes'
+  return pendingCount.value > 0
+    ? `Syncing… ${pendingCount.value} change${pendingCount.value === 1 ? '' : 's'} pending`
+    : 'Online'
+})
 
 async function handleLogout() {
   await authStore.logout()
@@ -244,12 +253,19 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.app-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex: 1;
+  min-width: 0;
+}
+
 .app-name {
   font-weight: 700;
   font-size: var(--text-base);
   color: var(--text-primary);
   letter-spacing: 0.02em;
-  flex: 1;
 }
 
 .header-actions {
@@ -279,7 +295,6 @@ onUnmounted(() => {
   height: 8px;
   border-radius: var(--r-full);
   flex-shrink: 0;
-  margin: 0 var(--sp-1);
 }
 
 .status-dot.online {
@@ -288,6 +303,16 @@ onUnmounted(() => {
 
 .status-dot.offline {
   background: var(--accent-danger);
+}
+
+.status-dot.syncing {
+  background: #faa61a;
+  animation: status-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 @media (hover: none) {
