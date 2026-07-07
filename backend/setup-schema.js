@@ -113,11 +113,14 @@ async function createRelation(collection, field, relatedCollection, onDelete = '
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// UUID v4 primary key — client-generated on every create (see navStore.js /
+// notesStore.js), but `special: ['uuid']` also has Directus auto-populate it
+// if a record is ever created without one supplied (e.g. via the admin UI).
 const primaryKey = () => ({
   field: 'id',
-  type: 'integer',
-  meta: { hidden: true, readonly: true, interface: 'input', special: null },
-  schema: { is_primary_key: true, has_auto_increment: true, is_nullable: false },
+  type: 'uuid',
+  meta: { hidden: true, readonly: true, interface: 'input', special: ['uuid'] },
+  schema: { is_primary_key: true, is_nullable: false },
 })
 
 const stringField = (field, nullable = true, defaultValue = null) => ({
@@ -196,7 +199,7 @@ async function main() {
       primaryKey(),
       stringField('name', false),
       stringField('emoji', true),
-      { field: 'section_id', type: 'integer', meta: { interface: 'select-dropdown-m2o' }, schema: { is_nullable: true } },
+      { field: 'section_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o' }, schema: { is_nullable: true } },
       intField('sort_order', 0),
     ],
     { icon: 'article', sort_field: 'sort_order' }
@@ -208,7 +211,7 @@ async function main() {
     'notes',
     [
       primaryKey(),
-      { field: 'page_id', type: 'integer', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'page_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
       textField('content'),
       // Attachments live entirely in note_files (supports multiple, mixed-type
       // attachments per note) — a single enum on the note itself can't represent
@@ -225,7 +228,7 @@ async function main() {
     'note_files',
     [
       primaryKey(),
-      { field: 'note_id', type: 'integer', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'note_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
       { field: 'file_id', type: 'uuid', meta: { interface: 'file' }, schema: { is_nullable: true } },
       { ...stringField('attachment_type', false, 'file'), schema: { is_nullable: false, default_value: 'file' } },
       stringField('embed_url', true),
