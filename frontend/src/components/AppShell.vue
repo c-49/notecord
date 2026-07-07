@@ -23,6 +23,8 @@
 
       <RouterView />
     </main>
+
+    <SearchSidebar v-if="searchStore.active" />
   </div>
 </template>
 
@@ -30,10 +32,13 @@
 import { ref, onMounted } from 'vue'
 import { RouterView, useRouter, useRoute } from 'vue-router'
 import ServerSidebar from '@/components/ServerSidebar.vue'
+import SearchSidebar from '@/components/search/SearchSidebar.vue'
 import { useNavStore } from '@/stores/navStore'
+import { useSearchStore } from '@/stores/searchStore'
 import { storeToRefs } from 'pinia'
 
 const navStore = useNavStore()
+const searchStore = useSearchStore()
 const { activePage } = storeToRefs(navStore)
 const sidebarOpen = ref(false)
 const router = useRouter()

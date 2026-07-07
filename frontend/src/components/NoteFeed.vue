@@ -38,6 +38,7 @@
 <script setup>
 import { ref, computed, watch, nextTick } from 'vue'
 import { useNotesStore } from '@/stores/notesStore'
+import { useSearchStore } from '@/stores/searchStore'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import { formatDayDivider } from '@/utils/dateUtils'
 import NoteBlock from '@/components/NoteBlock.vue'
@@ -47,6 +48,7 @@ const props = defineProps({
 })
 
 const notesStore = useNotesStore()
+const searchStore = useSearchStore()
 const { isOnline } = useOnlineStatus()
 const feedEl = ref(null)
 
@@ -55,8 +57,28 @@ const groupedNotes = computed(() => notesStore.notesByDay())
 watch(() => props.pageId, async (id) => {
   await notesStore.loadNotes(id)
   await nextTick()
-  scrollToBottom()
+  // Suppressed during a search jump's cross-page navigation — the
+  // jumpTargetNoteId watcher below handles scrolling in that case instead.
+  if (!searchStore.suppressAutoScroll) scrollToBottom()
 }, { immediate: true })
+
+// Performs the actual scroll for search's "jump to result" — fires once the
+// target page has loaded and the note's DOM node exists. A short retry loop
+// covers the case where this fires on the very first tick after a
+// cross-page navigation, before NoteBlock has actually rendered yet.
+watch(() => searchStore.jumpTargetNoteId, async (id) => {
+  if (!id) return
+  let el = null
+  for (let i = 0; i < 5 && !el; i++) {
+    await nextTick()
+    el = feedEl.value?.querySelector(`#note-${CSS.escape(id)}`)
+    if (!el) await new Promise((r) => setTimeout(r, 20))
+  }
+  el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el?.classList.add('jump-highlight')
+  setTimeout(() => el?.classList.remove('jump-highlight'), 1500)
+  searchStore.clearJumpTarget()
+})
 
 // Distinguish a genuinely new note (appended at the end — scroll to it) from
 // "Load earlier notes" revealing older ones (prepended at the start — keep

@@ -3,11 +3,13 @@ import { ref, computed, watch } from 'vue'
 import groupBy from 'lodash/groupBy'
 import { db } from '@/services/db'
 import { readNotes } from '@/services/offlineData'
-import { getOlderNotes } from '@/services/api'
+import { getOlderNotes, getNotesInRange } from '@/services/api'
 import { queueMutation, requestDrain, lastSyncedAt } from '@/services/mutationQueue'
 import { getDayKey } from '@/utils/dateUtils'
 
 const PAGE_SIZE = 30
+const REVEAL_FETCH_LIMIT = 500
+const MAX_REVEAL_ITERATIONS = 10
 
 export const useNotesStore = defineStore('notes', () => {
   // Full, ascending-by-date_created list for the current page — cached
@@ -30,6 +32,13 @@ export const useNotesStore = defineStore('notes', () => {
   const hasMore = computed(() => visibleCount.value < allNotes.value.length)
 
   async function loadNotes(pageId) {
+    // Already loaded for this exact page — a genuine page switch always
+    // changes currentPageId first, so this only ever skips a truly
+    // redundant back-to-back call (e.g. search's jumpToResult() pre-loading
+    // + widening the window right before navigation, followed moments
+    // later by this same component's own route-watcher firing on mount).
+    // Re-reading here would reset visibleCount and undo that widening.
+    if (currentPageId.value === pageId && allNotes.value.length) return
     loading.value = true
     currentPageId.value = pageId
     visibleCount.value = PAGE_SIZE
@@ -173,6 +182,43 @@ export const useNotesStore = defineStore('notes', () => {
     requestDrain()
   }
 
+  // Used by search's jump-to-result flow. Purely a Dexie/API side effect —
+  // doesn't touch allNotes/visibleCount/currentPageId, so it's safe to call
+  // before deciding whether/how to navigate. Returns { found: true } if the
+  // note is (now) cached locally, or { found: false, reason } if it isn't
+  // and can't be fetched (offline and not already cached).
+  async function ensureNoteCached(pageId, noteId, noteDateCreated, isOnline) {
+    const existing = await db.notes.get(noteId)
+    if (existing && !existing.deleted_at) return { found: true }
+    if (!isOnline) return { found: false, reason: 'offline-uncached' }
+
+    let upperBound = new Date().toISOString()
+    for (let i = 0; i < MAX_REVEAL_ITERATIONS; i++) {
+      const rows = await getNotesInRange(pageId, noteDateCreated, upperBound, REVEAL_FETCH_LIMIT)
+      if (!rows.length) break
+      const noteRows = rows.map(({ files, ...n }) => n)
+      const fileRows = rows.flatMap((n) => n.files ?? [])
+      await db.transaction('rw', db.notes, db.note_files, async () => {
+        await db.notes.bulkPut(noteRows)
+        if (fileRows.length) await db.note_files.bulkPut(fileRows)
+      })
+      if (rows.some((n) => n.id === noteId)) return { found: true }
+      if (rows.length < REVEAL_FETCH_LIMIT) break // hit the server's true history start
+      upperBound = rows[rows.length - 1].date_created
+    }
+    return { found: false, reason: 'not-found' }
+  }
+
+  // Reveals an already-loaded-but-scrolled-out-of-window note by widening
+  // the visible slice to include it. Returns false if the note isn't in
+  // allNotes at all (caller should have ensureNoteCached()'d first).
+  function widenToInclude(noteId) {
+    const idx = allNotes.value.findIndex((n) => n.id === noteId)
+    if (idx === -1) return false
+    visibleCount.value = Math.max(visibleCount.value, allNotes.value.length - idx)
+    return true
+  }
+
   function clearNotes() {
     allNotes.value = []
     visibleCount.value = PAGE_SIZE
@@ -193,6 +239,8 @@ export const useNotesStore = defineStore('notes', () => {
     addNote,
     editNote,
     removeNote,
+    ensureNoteCached,
+    widenToInclude,
     clearNotes,
   }
 })

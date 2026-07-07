@@ -38,3 +38,16 @@ export function formatDayDivider(isoString) {
 export function getDayKey(isoString) {
   return DateTime.fromISO(isoString).toISODate()
 }
+
+/**
+ * Converts an <input type="date"> value (YYYY-MM-DD, the user's local
+ * calendar day) into half-open [startIso, endIso) UTC bounds. Always
+ * normalized to UTC 'Z' form (not .toISO()'s local-offset default) so the
+ * exact same strings are safe both as Directus filter values and for direct
+ * string/epoch comparison in the offline search matcher.
+ */
+export function dayBoundsToIso(dateStr) {
+  const start = DateTime.fromISO(dateStr, { zone: 'local' }).startOf('day').toUTC()
+  const end = start.plus({ days: 1 })
+  return { startIso: start.toISO(), endIso: end.toISO() }
+}

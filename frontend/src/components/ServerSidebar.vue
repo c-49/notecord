@@ -39,6 +39,14 @@
           </Transition>
         </div>
 
+        <!-- Search -->
+        <button class="header-btn" aria-label="Search" title="Search notes" @click="searchStore.openSearch()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+        </button>
+
         <!-- Theme customizer -->
         <button class="header-btn" aria-label="Settings" title="Customize theme" @click="showThemeCustomizer = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -133,6 +141,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useNavStore } from '@/stores/navStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useSearchStore } from '@/stores/searchStore'
 import { useRouter } from 'vue-router'
 import SectionGroup from '@/components/SectionGroup.vue'
 import PageListItem from '@/components/PageListItem.vue'
@@ -144,6 +153,7 @@ import { pendingCount } from '@/services/mutationQueue'
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
 const authStore = useAuthStore()
+const searchStore = useSearchStore()
 const router = useRouter()
 const { isOnline } = useOnlineStatus()
 

@@ -1,5 +1,6 @@
 <template>
   <div
+    :id="`note-${note.id}`"
     class="note-block"
     :class="{ highlighted }"
     @mouseenter="highlighted = true"
@@ -206,6 +207,11 @@ async function confirmDelete() {
 
 .note-block.highlighted {
   background: var(--bg-note-hover);
+}
+
+.note-block.jump-highlight {
+  background: var(--bg-note-hover);
+  transition: background var(--t-slow);
 }
 
 /* ── Hover toolbar ── */
