@@ -19,27 +19,44 @@ export const useAuthStore = defineStore('auth', () => {
   // re-issuing the refresh/readMe network calls after the first resolution.
   let sessionCheck = null
 
-  function checkSession() {
-    if (!sessionCheck) {
-      sessionCheck = (async () => {
-        if (!navigator.onLine) {
-          status.value = localStorage.getItem(AUTH_FLAG_KEY) === '1' ? 'authenticated' : 'unauthenticated'
-          return
-        }
-        try {
-          await refreshSession()
-          user.value = await getCurrentUser()
-          status.value = 'authenticated'
-          localStorage.setItem(AUTH_FLAG_KEY, '1')
-        } catch {
-          user.value = null
-          status.value = 'unauthenticated'
-          localStorage.removeItem(AUTH_FLAG_KEY)
-        }
-      })()
+  async function reauthenticate() {
+    try {
+      await refreshSession()
+      user.value = await getCurrentUser()
+      status.value = 'authenticated'
+      localStorage.setItem(AUTH_FLAG_KEY, '1')
+    } catch (e) {
+      // navigator.onLine is unreliable (e.g. Brave's DevTools "Offline" mode
+      // doesn't flip it), so don't gate on it — instead distinguish by what
+      // actually happened: the Directus SDK throws a structured error with an
+      // `errors` array when a request reaches the server and gets a real
+      // rejection (expired/invalid session), vs. a plain TypeError with no
+      // such array when the request never reached the server at all (no
+      // network, DNS failure, etc). Only the former is a genuine logout.
+      const serverRejected = Array.isArray(e?.errors)
+      user.value = null
+      if (serverRejected) {
+        status.value = 'unauthenticated'
+        localStorage.removeItem(AUTH_FLAG_KEY)
+      } else {
+        status.value = localStorage.getItem(AUTH_FLAG_KEY) === '1' ? 'authenticated' : 'unauthenticated'
+      }
     }
+  }
+
+  function checkSession() {
+    if (!sessionCheck) sessionCheck = reauthenticate()
     return sessionCheck
   }
+
+  // If the offline-trust fallback above rendered the app from the cached flag
+  // alone, the SDK never actually got a real access token into memory —
+  // reconnecting mid-session (no reload) would otherwise leave writes
+  // silently failing until the next full reload, since nothing else
+  // triggers a re-auth. Re-verify for real the moment connectivity returns.
+  window.addEventListener('online', () => {
+    if (status.value === 'authenticated') reauthenticate()
+  })
 
   async function login(email, password) {
     error.value = null
