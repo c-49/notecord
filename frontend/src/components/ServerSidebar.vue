@@ -477,10 +477,9 @@ onUnmounted(() => {
 @media (max-width: 768px) {
   .sidebar {
     position: fixed;
-    top: 0;
-    left: 0;
-    bottom: 0;
+    inset: 0;
     z-index: 20;
+    width: 100%;
     transform: translateX(-100%);
     transition: transform var(--t-slow);
   }
