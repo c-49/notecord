@@ -110,14 +110,10 @@ const otherAttachments = computed(() =>
 
 function attIcon(att) {
   if (att.type === 'voice') return '🎤'
-  if (att.type === 'embed') return '🔗'
   return '📎'
 }
 
 function attLabel(att) {
-  if (att.type === 'embed') {
-    try { return new URL(att.url).hostname } catch { return att.url }
-  }
   if (att.type === 'voice') return `Voice (${formatVoiceSize(att.file?.size)})`
   return att.file?.name ?? 'Attachment'
 }
@@ -131,21 +127,6 @@ function formatVoiceSize(bytes) {
 
 function onTextUpdate(text) {
   plainText.value = text
-
-  // Auto-detect pasted URLs → embed (only when that's the entire content)
-  const trimmed = text.trim()
-  if (trimmed && isUrl(trimmed) && !attachments.value.some(a => a.type === 'embed' && a.url === trimmed)) {
-    addAttachment({ type: 'embed', url: trimmed })
-  }
-}
-
-function isUrl(str) {
-  try {
-    const u = new URL(str)
-    return u.protocol === 'http:' || u.protocol === 'https:'
-  } catch {
-    return false
-  }
 }
 
 function addAttachment(att) {
@@ -196,6 +177,12 @@ async function submit() {
   submitting.value = true
   submitError.value = ''
   try {
+    // A link pasted a moment before submitting may still be mid-resolve —
+    // wait (briefly, bounded) so the saved note captures the resolved card
+    // instead of the plain fallback, which would otherwise be permanent
+    // (the editor's content is cleared right after this, so a resolve that
+    // lands later has nothing left to patch).
+    await editorRef.value?.waitForPendingEmbeds()
     const content = htmlContent.value || null
     // Writes locally and queues sync immediately — never throws for a
     // connectivity/upload reason, since those are retried in the background.

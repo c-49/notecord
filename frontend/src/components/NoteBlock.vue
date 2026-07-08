@@ -174,8 +174,13 @@ async function submitEdit() {
     return
   }
   saving.value = true
-  editing.value = false
   try {
+    // Same race as the composer's submit: a link pasted just before saving
+    // may still be mid-resolve, and this editor instance is about to be
+    // torn down (editing.value = false unmounts it), so any resolve that
+    // lands after that has nothing left to patch.
+    await editEditorRef.value?.waitForPendingEmbeds()
+    editing.value = false
     const nextContent = editEmpty.value ? null : editContent.value
     if (nextContent !== props.note.content) {
       await notesStore.editNote(props.note.id, nextContent)
@@ -462,6 +467,89 @@ async function confirmDelete() {
 
 .note-content :deep(.link-embed-video--tiktok .link-embed-video-frame) {
   aspect-ratio: 9 / 16;
+}
+
+/* Generic resolved article card: a small thumbnail beside the title/host/description. */
+.note-content :deep(.link-embed-thumb) {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-input);
+}
+
+.note-content :deep(.link-embed-title) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-content :deep(.link-embed-description) {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Resolved tweet card: avatar/author header, tweet text, optional media —
+   stacked vertically inside the body, unlike the article card's side thumbnail. */
+.note-content :deep(.link-embed-tweet-body) {
+  gap: var(--sp-2);
+}
+
+.note-content :deep(.link-embed-tweet-header) {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.note-content :deep(.link-embed-tweet-avatar) {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.note-content :deep(.link-embed-tweet-names) {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  overflow: hidden;
+}
+
+.note-content :deep(.link-embed-tweet-name) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.note-content :deep(.link-embed-tweet-handle) {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.note-content :deep(.link-embed-tweet-text) {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.note-content :deep(.link-embed-tweet-media) {
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+  border-radius: var(--r-lg);
 }
 
 /* ── Inline edit ── */

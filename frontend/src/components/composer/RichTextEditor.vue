@@ -184,59 +184,8 @@ import TableCell from '@tiptap/extension-table-cell'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import { TextStyle, Color, FontSize, BackgroundColor } from '@tiptap/extension-text-style'
-
-// A pasted URL that points at a YouTube video is rendered as a playable
-// embed instead of a plain card. The iframe src is always rebuilt from a
-// strictly-validated video ID — never the raw href — so a crafted href can
-// never smuggle an arbitrary iframe src through this.
-function getYoutubeEmbedUrl(href) {
-  let url
-  try {
-    url = new URL(href)
-  } catch {
-    return null
-  }
-  const host = url.hostname.replace(/^www\./, '')
-  let id = null
-  if (host === 'youtu.be') {
-    id = url.pathname.slice(1)
-  } else if (host === 'youtube.com' || host === 'm.youtube.com') {
-    if (url.pathname === '/watch') id = url.searchParams.get('v')
-    else if (url.pathname.startsWith('/embed/')) id = url.pathname.slice('/embed/'.length)
-    else if (url.pathname.startsWith('/shorts/')) id = url.pathname.slice('/shorts/'.length)
-  }
-  if (!id || !/^[\w-]{11}$/.test(id)) return null
-  return `https://www.youtube-nocookie.com/embed/${id}`
-}
-
-// TikTok exposes a direct iframe player at /embed/v2/<id> (the same endpoint
-// their own oEmbed response embeds under the hood), so — like YouTube above —
-// this can be resolved entirely client-side with no oEmbed round-trip. Short
-// links (vm.tiktok.com/vt.tiktok.com) redirect server-side and can't be
-// resolved without following that redirect, so they fall through to the
-// plain link-preview card instead.
-function getTiktokEmbedUrl(href) {
-  let url
-  try {
-    url = new URL(href)
-  } catch {
-    return null
-  }
-  const host = url.hostname.replace(/^www\./, '')
-  if (host !== 'tiktok.com' && host !== 'm.tiktok.com') return null
-  const id = url.pathname.match(/\/video\/(\d+)/)?.[1]
-  if (!id || !/^\d{5,25}$/.test(id)) return null
-  return `https://www.tiktok.com/embed/v2/${id}`
-}
-
-// Dispatches a href to the first recognized video provider, if any.
-function getVideoEmbed(href) {
-  const youtube = getYoutubeEmbedUrl(href)
-  if (youtube) return { provider: 'youtube', embedUrl: youtube }
-  const tiktok = getTiktokEmbedUrl(href)
-  if (tiktok) return { provider: 'tiktok', embedUrl: tiktok }
-  return null
-}
+import { getVideoEmbed, classifyEmbedProvider } from '../../utils/embedProviders'
+import { resolveEmbed } from '../../utils/embedResolver'
 
 // Renders a pasted/inserted bare URL as a static card (matching the composer's
 // attachment-level embed card) instead of a plain autolinked text run — or,
@@ -249,11 +198,31 @@ const LinkEmbed = Node.create({
   addAttributes() {
     return {
       href: { default: null, parseHTML: (el) => el.getAttribute('href') || el.getAttribute('data-href') },
+      // Populated asynchronously after insertion by resolving the href
+      // against /api/resolve-embed (see maybeResolveLinkEmbed below) — never
+      // re-derived from href on render, only ever set once by that resolve
+      // step, then persisted as-is in the note's stored HTML from then on.
+      resolved: { default: false, parseHTML: (el) => el.getAttribute('data-resolved') === 'true' },
+      kind: { default: null, parseHTML: (el) => el.getAttribute('data-kind') || null },
+      title: { default: null, parseHTML: (el) => el.getAttribute('data-title') || null },
+      description: { default: null, parseHTML: (el) => el.getAttribute('data-description') || null },
+      thumbnail: { default: null, parseHTML: (el) => el.getAttribute('data-thumbnail') || null },
+      authorName: { default: null, parseHTML: (el) => el.getAttribute('data-author-name') || null },
+      authorHandle: { default: null, parseHTML: (el) => el.getAttribute('data-author-handle') || null },
+      authorAvatar: { default: null, parseHTML: (el) => el.getAttribute('data-author-avatar') || null },
     }
   },
 
   parseHTML() {
-    return [{ tag: 'a[data-link-embed]' }, { tag: 'div[data-link-embed]' }]
+    // Tiptap's Link *mark* (autolink: true) sets its own parseHTML priority
+    // to 1000 specifically so it wins over ordinary node rules on `<a>`
+    // elements — which otherwise silently eats our `<a data-link-embed>`
+    // card, flattening it into a plain autolinked text span on reload. Both
+    // rules need a priority above that to actually win the match.
+    return [
+      { tag: 'a[data-link-embed]', priority: 1001 },
+      { tag: 'div[data-link-embed]', priority: 1001 },
+    ]
   },
 
   renderHTML({ node }) {
@@ -273,8 +242,58 @@ const LinkEmbed = Node.create({
         ],
       ]
     }
+
     let hostname = href
     try { hostname = new URL(href).hostname } catch { /* not a valid URL, show as-is */ }
+
+    // Resolved rich cards store every scraped/API field as a `data-*`
+    // attribute (in addition to rendering it visibly) purely so parseHTML
+    // above can recover it when the note's saved HTML is loaded back into
+    // the editor — otherwise reopening a note for inline-edit would silently
+    // drop back to the unresolved plain card.
+    const dataAttrs = {}
+    if (node.attrs.resolved) dataAttrs['data-resolved'] = 'true'
+    if (node.attrs.kind) dataAttrs['data-kind'] = node.attrs.kind
+    if (node.attrs.title) dataAttrs['data-title'] = node.attrs.title
+    if (node.attrs.description) dataAttrs['data-description'] = node.attrs.description
+    if (node.attrs.thumbnail) dataAttrs['data-thumbnail'] = node.attrs.thumbnail
+    if (node.attrs.authorName) dataAttrs['data-author-name'] = node.attrs.authorName
+    if (node.attrs.authorHandle) dataAttrs['data-author-handle'] = node.attrs.authorHandle
+    if (node.attrs.authorAvatar) dataAttrs['data-author-avatar'] = node.attrs.authorAvatar
+
+    if (node.attrs.resolved && node.attrs.kind === 'tweet') {
+      const header = [
+        'span', { class: 'link-embed-tweet-header' },
+      ]
+      if (node.attrs.authorAvatar) header.push(['img', { class: 'link-embed-tweet-avatar', src: node.attrs.authorAvatar, alt: '' }])
+      const names = ['span', { class: 'link-embed-tweet-names' }, ['span', { class: 'link-embed-tweet-name' }, node.attrs.authorName || 'Tweet']]
+      if (node.attrs.authorHandle) names.push(['span', { class: 'link-embed-tweet-handle' }, `@${node.attrs.authorHandle}`])
+      header.push(names)
+
+      const body = ['span', { class: 'link-embed-body link-embed-tweet-body' }, header]
+      if (node.attrs.description) body.push(['span', { class: 'link-embed-tweet-text' }, node.attrs.description])
+      if (node.attrs.thumbnail) body.push(['img', { class: 'link-embed-tweet-media', src: node.attrs.thumbnail, alt: '' }])
+
+      return ['a', { 'data-link-embed': '', href, target: '_blank', rel: 'noopener noreferrer', class: 'link-embed-card link-embed-tweet', ...dataAttrs },
+        ['span', { class: 'link-embed-accent' }],
+        body,
+      ]
+    }
+
+    if (node.attrs.resolved && node.attrs.kind === 'article') {
+      const body = ['span', { class: 'link-embed-body' }, ['span', { class: 'link-embed-host' }, hostname]]
+      if (node.attrs.title) body.push(['span', { class: 'link-embed-title' }, node.attrs.title])
+      if (node.attrs.description) body.push(['span', { class: 'link-embed-description' }, node.attrs.description])
+
+      const children = [['span', { class: 'link-embed-accent' }]]
+      if (node.attrs.thumbnail) children.push(['img', { class: 'link-embed-thumb', src: node.attrs.thumbnail, alt: '' }])
+      children.push(body)
+
+      return ['a', { 'data-link-embed': '', href, target: '_blank', rel: 'noopener noreferrer', class: 'link-embed-card link-embed-article', ...dataAttrs }, ...children]
+    }
+
+    // Plain fallback card — also doubles as the loading state while a
+    // 'resolver'-classified href hasn't come back from /api/resolve-embed yet.
     return ['a', { 'data-link-embed': '', href, target: '_blank', rel: 'noopener noreferrer', class: 'link-embed-card' },
       ['span', { class: 'link-embed-accent' }],
       ['span', { class: 'link-embed-body' },
@@ -313,6 +332,7 @@ const LinkEmbed = Node.create({
             if (text === text.trim() && isUrl(text)) match = { pos, node }
           })
           if (!match) return null
+          maybeResolveLinkEmbed(match.node.firstChild.text)
           return newState.tr.replaceWith(
             match.pos,
             match.pos + match.node.nodeSize,
@@ -442,6 +462,7 @@ const editor = useEditor({
       const text = event.clipboardData?.getData('text/plain')?.trim()
       if (text && isUrl(text)) {
         editor.value?.chain().focus().insertContent({ type: 'linkEmbed', attrs: { href: text } }).run()
+        maybeResolveLinkEmbed(text)
         return true
       }
 
@@ -462,6 +483,7 @@ const editor = useEditor({
   onCreate({ editor: ed }) {
     emit('update:text', ed.getText())
     emit('update:empty', ed.isEmpty)
+    retryUnresolvedLinkEmbeds(ed)
   },
   onUpdate({ editor: ed }) {
     emit('update:modelValue', ed.isEmpty ? '' : ed.getHTML())
@@ -469,6 +491,72 @@ const editor = useEditor({
     emit('update:empty', ed.isEmpty)
   },
 })
+
+// A link pasted while offline never gets a resolver response, so it would
+// otherwise stay the plain fallback card forever. On mount (covers both the
+// composer and inline-edit, which each create a fresh editor instance),
+// sweep once for any not-yet-resolved 'resolver'-classified nodes and retry.
+function retryUnresolvedLinkEmbeds(ed) {
+  if (!navigator.onLine) return
+  const hrefs = new Set()
+  ed.state.doc.descendants((node) => {
+    if (node.type.name !== 'linkEmbed' || node.attrs.resolved) return
+    if (classifyEmbedProvider(node.attrs.href) !== 'resolver') return
+    hrefs.add(node.attrs.href)
+  })
+  hrefs.forEach((href) => maybeResolveLinkEmbed(href))
+}
+
+// Tracks in-flight /api/resolve-embed calls so a note submitted (Enter, or
+// the composer's send button) a moment after pasting a link doesn't
+// permanently bake in the plain fallback card — see waitForPendingEmbeds
+// below, which the composer awaits before it actually reads out the
+// editor's HTML to save.
+const pendingResolves = new Set()
+
+// Resolves a freshly-inserted (or still-unresolved) href via the Worker's
+// /api/resolve-embed and, if it comes back with data, patches the matching
+// node's attrs in place — fire-and-forget from every insertion call site
+// (paste handler, toolbar button, mobile-paste fallback) plus the retry
+// sweep above, so they all funnel through the same logic.
+async function maybeResolveLinkEmbed(href) {
+  if (classifyEmbedProvider(href) !== 'resolver') return
+  const task = resolveAndApply(href)
+  pendingResolves.add(task)
+  try {
+    await task
+  } finally {
+    pendingResolves.delete(task)
+  }
+}
+
+async function resolveAndApply(href) {
+  const data = await resolveEmbed(href)
+  if (!data) return
+  const ed = editor.value
+  if (!ed) return
+
+  let pos = null
+  ed.state.doc.descendants((node, p) => {
+    if (pos !== null) return
+    if (node.type.name === 'linkEmbed' && node.attrs.href === href && !node.attrs.resolved) pos = p
+  })
+  if (pos === null) return
+
+  const node = ed.state.doc.nodeAt(pos)
+  if (!node) return
+  const tr = ed.state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, ...data, resolved: true })
+  ed.view.dispatch(tr)
+}
+
+// Awaited by the composer right before it reads out the editor's HTML to
+// save — bounded so a slow/stuck resolve can't hang submission indefinitely.
+function waitForPendingEmbeds() {
+  if (pendingResolves.size === 0) return Promise.resolve()
+  const settled = Promise.allSettled([...pendingResolves])
+  const timeout = new Promise((resolve) => setTimeout(resolve, 3000))
+  return Promise.race([settled, timeout])
+}
 
 watch(
   () => props.modelValue,
@@ -500,6 +588,7 @@ function insertEmbed() {
   const url = window.prompt('Embed a link as a card (URL)')
   if (!url) return
   ed.chain().focus().insertContent({ type: 'linkEmbed', attrs: { href: url } }).run()
+  maybeResolveLinkEmbed(url)
 }
 
 function onFontSizeChange(e) {
@@ -527,7 +616,7 @@ function focus() {
   editor.value?.chain().focus('end').run()
 }
 
-defineExpose({ focus })
+defineExpose({ focus, waitForPendingEmbeds })
 
 const toolbarEl = ref(null)
 const moreOpen = ref(false)
@@ -1014,5 +1103,88 @@ onBeforeUnmount(() => {
 
 .rte-content :deep(.link-embed-video--tiktok .link-embed-video-frame) {
   aspect-ratio: 9 / 16;
+}
+
+/* Generic resolved article card: a small thumbnail beside the title/host/description. */
+.rte-content :deep(.link-embed-thumb) {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg-input);
+}
+
+.rte-content :deep(.link-embed-title) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.rte-content :deep(.link-embed-description) {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Resolved tweet card: avatar/author header, tweet text, optional media —
+   stacked vertically inside the body, unlike the article card's side thumbnail. */
+.rte-content :deep(.link-embed-tweet-body) {
+  gap: var(--sp-2);
+}
+
+.rte-content :deep(.link-embed-tweet-header) {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.rte-content :deep(.link-embed-tweet-avatar) {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.rte-content :deep(.link-embed-tweet-names) {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1);
+  overflow: hidden;
+}
+
+.rte-content :deep(.link-embed-tweet-name) {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rte-content :deep(.link-embed-tweet-handle) {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.rte-content :deep(.link-embed-tweet-text) {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+.rte-content :deep(.link-embed-tweet-media) {
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+  border-radius: var(--r-lg);
 }
 </style>
