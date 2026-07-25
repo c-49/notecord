@@ -294,17 +294,21 @@ async function main() {
     meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
   })
 
-  // owner_id: the directus_users record that created the note. Nullable so
+  // owner_id: the directus_users record that created the row. Nullable so
   // pre-existing rows (and a deleted owner, via SET NULL below) don't break;
-  // stamped server-side on create (see the "NoteCord App Access" notes:create
-  // permission's preset below) rather than trusted from the request body.
-  await createField('notes', {
-    field: 'owner_id',
-    type: 'uuid',
-    meta: { interface: 'select-dropdown-m2o', special: ['m2o'] },
-    schema: { is_nullable: true },
-  })
-  await createRelation('notes', 'owner_id', 'directus_users', 'SET NULL')
+  // stamped server-side on create (see each collection's create permission's
+  // preset below) rather than trusted from the request body. Same treatment
+  // on sections/pages/notes — each owned independently, not inherited down
+  // the hierarchy, so e.g. a page's owner doesn't have to match its section's.
+  for (const collection of ['sections', 'pages', 'notes']) {
+    await createField(collection, {
+      field: 'owner_id',
+      type: 'uuid',
+      meta: { interface: 'select-dropdown-m2o', special: ['m2o'] },
+      schema: { is_nullable: true },
+    })
+    await createRelation(collection, 'owner_id', 'directus_users', 'SET NULL')
+  }
 
   // ── Permissions ──────────────────────────────────────────────────────────────
   // In Directus 11, admin_access:true only grants panel access.
@@ -442,28 +446,31 @@ async function main() {
     console.log('  ↳ policy "NoteCord App Access" already exists, skipping')
   }
 
-  // sections/pages: blanket CRUD — no per-user ownership concept for these.
-  for (const collection of ['sections', 'pages']) {
-    for (const action of actions) {
-      await upsertPermission(appPolicy.id, collection, action, { fields: '*' })
-    }
+  // sections/pages/notes: all three fully ownership-scoped — each user only
+  // ever sees/edits their own sections, pages, and notes, giving every user
+  // an entirely separate workspace on the same backend. `create` is stamped
+  // server-side via a preset — `fields` deliberately excludes owner_id so a
+  // client can't just send its own value in the request body (a preset only
+  // fills in a field that's *absent*; it does nothing if the field is
+  // writable and submitted). `read`/`update`/`delete` are scoped to rows the
+  // caller owns, enforced by Directus at the query level, not just hidden
+  // client-side.
+  const ownershipScopedCreateFields = {
+    sections: ['id', 'name', 'emoji', 'sort_order'],
+    pages: ['id', 'name', 'emoji', 'section_id', 'sort_order'],
+    notes: ['id', 'page_id', 'content'],
   }
-
-  // notes: ownership-scoped. `create` is stamped server-side via a preset —
-  // `fields` deliberately excludes owner_id so a client can't just send its
-  // own value in the request body (a preset only fills in a field that's
-  // *absent*; it does nothing if the field is writable and submitted).
-  // `read`/`update`/`delete` are scoped to rows the caller owns, enforced by
-  // Directus at the query level, not just hidden client-side.
-  await upsertPermission(appPolicy.id, 'notes', 'create', {
-    fields: ['id', 'page_id', 'content'],
-    presets: { owner_id: '$CURRENT_USER' },
-  })
-  for (const action of ['read', 'update', 'delete']) {
-    await upsertPermission(appPolicy.id, 'notes', action, {
-      fields: '*',
-      permissions: { owner_id: { _eq: '$CURRENT_USER' } },
+  for (const collection of ['sections', 'pages', 'notes']) {
+    await upsertPermission(appPolicy.id, collection, 'create', {
+      fields: ownershipScopedCreateFields[collection],
+      presets: { owner_id: '$CURRENT_USER' },
     })
+    for (const action of ['read', 'update', 'delete']) {
+      await upsertPermission(appPolicy.id, collection, action, {
+        fields: '*',
+        permissions: { owner_id: { _eq: '$CURRENT_USER' } },
+      })
+    }
   }
 
   // note_files: has no owner_id of its own — ownership is inherited from the
