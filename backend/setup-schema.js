@@ -111,6 +111,26 @@ async function createRelation(collection, field, relatedCollection, onDelete = '
   console.log(`  ✓ created relation ${collection}.${field} → ${relatedCollection}`)
 }
 
+// Unlike createField/createRelation (create-once, skip-if-exists), permission
+// *rules* on a collection/action can legitimately need to change on a
+// re-run (e.g. tightening an existing blanket grant to an ownership filter)
+// — so this converges to the desired state every run instead of skipping
+// once a permission row exists.
+async function upsertPermission(policyId, collection, action, { fields = '*', permissions = {}, presets = null } = {}) {
+  const existingResp = await req(
+    'GET',
+    `/permissions?filter[policy][_eq]=${policyId}&filter[collection][_eq]=${collection}&filter[action][_eq]=${action}&limit=1`
+  )
+  const existing = (existingResp.data ?? existingResp)[0]
+  const body = { policy: policyId, collection, action, fields, permissions, ...(presets ? { presets } : {}) }
+  if (existing) {
+    await req('PATCH', `/permissions/${existing.id}`, body)
+  } else {
+    await req('POST', '/permissions', body)
+  }
+  console.log(`  ✓ ${collection}:${action} set for policy ${policyId}`)
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // UUID v4 primary key — client-generated on every create (see navStore.js /
@@ -274,6 +294,18 @@ async function main() {
     meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
   })
 
+  // owner_id: the directus_users record that created the note. Nullable so
+  // pre-existing rows (and a deleted owner, via SET NULL below) don't break;
+  // stamped server-side on create (see the "NoteCord App Access" notes:create
+  // permission's preset below) rather than trusted from the request body.
+  await createField('notes', {
+    field: 'owner_id',
+    type: 'uuid',
+    meta: { interface: 'select-dropdown-m2o', special: ['m2o'] },
+    schema: { is_nullable: true },
+  })
+  await createRelation('notes', 'owner_id', 'directus_users', 'SET NULL')
+
   // ── Permissions ──────────────────────────────────────────────────────────────
   // In Directus 11, admin_access:true only grants panel access.
   // User-created collections also need explicit CRUD permissions per policy.
@@ -406,18 +438,49 @@ async function main() {
       app_access: false,
     })
     console.log('  ✓ created policy "NoteCord App Access"')
-    for (const collection of userCollections) {
-      for (const action of actions) {
-        await req('POST', '/permissions', { policy: appPolicy.id, collection, action, fields: '*' })
-      }
-    }
-    console.log(`  ✓ granted CRUD on ${userCollections.join(', ')} to "NoteCord App Access"`)
-    for (const action of ['create', 'read']) {
-      await req('POST', '/permissions', { policy: appPolicy.id, collection: 'directus_files', action, fields: '*' })
-    }
-    console.log('  ✓ granted directus_files:create/read to "NoteCord App Access"')
   } else {
     console.log('  ↳ policy "NoteCord App Access" already exists, skipping')
+  }
+
+  // sections/pages: blanket CRUD — no per-user ownership concept for these.
+  for (const collection of ['sections', 'pages']) {
+    for (const action of actions) {
+      await upsertPermission(appPolicy.id, collection, action, { fields: '*' })
+    }
+  }
+
+  // notes: ownership-scoped. `create` is stamped server-side via a preset —
+  // `fields` deliberately excludes owner_id so a client can't just send its
+  // own value in the request body (a preset only fills in a field that's
+  // *absent*; it does nothing if the field is writable and submitted).
+  // `read`/`update`/`delete` are scoped to rows the caller owns, enforced by
+  // Directus at the query level, not just hidden client-side.
+  await upsertPermission(appPolicy.id, 'notes', 'create', {
+    fields: ['id', 'page_id', 'content'],
+    presets: { owner_id: '$CURRENT_USER' },
+  })
+  for (const action of ['read', 'update', 'delete']) {
+    await upsertPermission(appPolicy.id, 'notes', action, {
+      fields: '*',
+      permissions: { owner_id: { _eq: '$CURRENT_USER' } },
+    })
+  }
+
+  // note_files: has no owner_id of its own — ownership is inherited from the
+  // parent note via a nested relational filter through note_id.owner_id.
+  // `create` stays unscoped (fields:'*', no filter): a client can only ever
+  // attach a file to a note it's already allowed to update, per the
+  // notes:update permission above, so there's nothing extra to enforce here.
+  await upsertPermission(appPolicy.id, 'note_files', 'create', { fields: '*' })
+  for (const action of ['read', 'update', 'delete']) {
+    await upsertPermission(appPolicy.id, 'note_files', action, {
+      fields: '*',
+      permissions: { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+    })
+  }
+
+  for (const action of ['create', 'read']) {
+    await upsertPermission(appPolicy.id, 'directus_files', action, { fields: '*' })
   }
 
   // backup_status: read-only for the app policy — it displays the "Last
