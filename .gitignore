@@ -28,5 +28,9 @@ Thumbs.db
 # Docker volumes are ephemeral; don't commit data
 backend/data/
 
+# Backup artifacts contain real note content/attachments — never commit
+backend/backup/db/
+backend/backup/export/
+
 # Others
 notes/

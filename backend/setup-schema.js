@@ -237,6 +237,26 @@ async function main() {
     { icon: 'attach_file', sort_field: 'sort_order' }
   )
 
+  // ── backup_status ────────────────────────────────────────────────────────────
+  // Written by backend/backup/backup-db.sh and export-notes.js after each
+  // successful run; read by the frontend to show "Last backup: ..." in the
+  // sidebar. One row per type ('db' | 'export'), upserted in place — never
+  // grown unbounded.
+  console.log('Creating "backup_status" collection…')
+  await createCollection(
+    'backup_status',
+    [
+      primaryKey(),
+      stringField('type', false),
+      // Plain writable timestamp (not a 'date-updated' special field) — the
+      // backup scripts set this explicitly only when a run actually
+      // succeeds, not on every write to the row.
+      { field: 'last_success_at', type: 'timestamp', meta: { interface: 'datetime' }, schema: { is_nullable: true } },
+      stringField('detail', true),
+    ],
+    { icon: 'cloud_done' }
+  )
+
   // ── Relations ────────────────────────────────────────────────────────────────
   console.log('\nCreating relations…')
 
@@ -276,6 +296,24 @@ async function main() {
           } else {
             throw e
           }
+        }
+      }
+    }
+  }
+
+  // backup_status: admin policies get full CRUD (needed for the backup
+  // scripts' ADMIN_TOKEN to write it) — kept out of userCollections above
+  // since the app-facing policy below only gets read access to this one.
+  for (const policy of policies) {
+    for (const action of actions) {
+      try {
+        await req('POST', '/permissions', { policy: policy.id, collection: 'backup_status', action, fields: '*' })
+        console.log(`  ✓ ${policy.name} → backup_status:${action}`)
+      } catch (e) {
+        if (e.message.includes('duplicate') || e.message.includes('Unique constraint') || e.message.includes('already')) {
+          console.log(`  ↳ backup_status:${action} already set`)
+        } else {
+          throw e
         }
       }
     }
@@ -380,6 +418,22 @@ async function main() {
     console.log('  ✓ granted directus_files:create/read to "NoteCord App Access"')
   } else {
     console.log('  ↳ policy "NoteCord App Access" already exists, skipping')
+  }
+
+  // backup_status: read-only for the app policy — it displays the "Last
+  // backup" indicator but must never be able to write this collection
+  // (only the backup scripts' ADMIN_TOKEN does that). Kept outside the
+  // block above so it's still granted on a re-run against an instance where
+  // "NoteCord App Access" already existed before backup_status was added.
+  try {
+    await req('POST', '/permissions', { policy: appPolicy.id, collection: 'backup_status', action: 'read', fields: '*' })
+    console.log('  ✓ granted backup_status:read to "NoteCord App Access"')
+  } catch (e) {
+    if (e.message.includes('duplicate') || e.message.includes('Unique constraint') || e.message.includes('already')) {
+      console.log('  ↳ backup_status:read already set')
+    } else {
+      throw e
+    }
   }
 
   const appRoleFull = await req('GET', `/roles/${appRole.id}`)

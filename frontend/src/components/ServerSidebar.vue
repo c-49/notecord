@@ -94,6 +94,10 @@
       </template>
     </div>
 
+    <div v-if="lastBackupAt" class="sidebar-footer" :title="backupTooltip">
+      Last backup: {{ formatNoteTimestamp(lastBackupAt) }}
+    </div>
+
     <!-- Modals -->
     <Teleport to="body">
       <div v-if="showAddSection" class="modal-backdrop" @click.self="showAddSection = false">
@@ -140,6 +144,8 @@ import EmojiInput from '@/components/EmojiInput.vue'
 import ThemeCustomizer from '@/components/ThemeCustomizer.vue'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import { pendingCount } from '@/services/mutationQueue'
+import { getBackupStatus } from '@/services/api'
+import { formatNoteTimestamp } from '@/utils/dateUtils'
 
 const emit = defineEmits(['close'])
 const navStore = useNavStore()
@@ -221,9 +227,27 @@ function onClickOutside(e) {
   }
 }
 
+// "Last backup" footer — best-effort only. If the collection isn't there
+// yet or the request fails, the footer just doesn't render; it must never
+// break the sidebar itself.
+const backupStatus = ref([])
+
+const lastBackupAt = computed(() => {
+  const timestamps = backupStatus.value.map((r) => r.last_success_at).filter(Boolean)
+  return timestamps.length ? timestamps.sort().at(-1) : null
+})
+
+const backupTooltip = computed(() => {
+  return backupStatus.value
+    .filter((r) => r.last_success_at)
+    .map((r) => `${r.type}: ${formatNoteTimestamp(r.last_success_at)}${r.detail ? ` (${r.detail})` : ''}`)
+    .join(' · ')
+})
+
 onMounted(() => {
   document.addEventListener('mousedown', onClickOutside)
   document.addEventListener('touchstart', onClickOutside)
+  getBackupStatus().then((rows) => { backupStatus.value = rows }).catch(() => {})
 })
 onUnmounted(() => {
   document.removeEventListener('mousedown', onClickOutside)
@@ -414,6 +438,18 @@ onUnmounted(() => {
 
 .empty-state strong {
   color: var(--text-secondary);
+}
+
+/* ── Footer ── */
+.sidebar-footer {
+  flex-shrink: 0;
+  padding: var(--sp-2) var(--sp-4);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Modal ── */

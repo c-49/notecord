@@ -175,6 +175,14 @@ export async function uploadFile(file) {
   return client.request(uploadFiles(formData))
 }
 
+// ── Backup status ─────────────────────────────────────────────────────────────
+
+// Read-only for this app's login role — written by backend/backup/*.js/.sh,
+// used only to show "Last backup: ..." in the sidebar.
+export async function getBackupStatus() {
+  return client.request(readItems('backup_status'))
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function getFileUrl(fileId) {
