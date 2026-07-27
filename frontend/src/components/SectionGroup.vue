@@ -11,23 +11,31 @@
           <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
         <span class="section-name">{{ section.emoji ? `${section.emoji} ` : '' }}{{ section.name }}</span>
+        <span v-if="isShared" class="shared-badge" title="Shared with you">👥</span>
+        <span v-else-if="hasGrants" class="shared-badge" title="You've shared this">🔗</span>
       </button>
 
       <!-- Hover actions (always in the DOM — visibility is CSS-driven so touch
            devices, which never fire mouseenter, can still reach these) -->
       <div class="section-actions">
-        <button class="action-btn" title="Add page" @click.stop="openAddPage">
+        <button v-if="canAddPage" class="action-btn" title="Add page" @click.stop="openAddPage">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor">
             <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
           </svg>
         </button>
-        <button class="action-btn" title="Rename" @click.stop="startRename">
+        <button v-if="isOwner" class="action-btn" title="Share" @click.stop="showShareModal = true">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </button>
+        <button v-if="isOwner" class="action-btn" title="Rename" @click.stop="startRename">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
             <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
         </button>
-        <button class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
+        <button v-if="isOwner" class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="3 6 5 6 21 6"/>
             <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
@@ -42,6 +50,7 @@
         v-for="page in section.pages"
         :key="page.id"
         :page="page"
+        :section="section"
       />
     </nav>
 
@@ -103,25 +112,48 @@
         </div>
       </div>
     </Teleport>
+
+    <ShareSectionModal
+      v-if="showShareModal"
+      :section="section"
+      :section-pages="section.pages"
+      @close="showShareModal = false"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useNavStore } from '@/stores/navStore'
+import { useSharingStore } from '@/stores/sharingStore'
 import { useRouter } from 'vue-router'
 import PageListItem from '@/components/PageListItem.vue'
 import EmojiInput from '@/components/EmojiInput.vue'
+import ShareSectionModal from '@/components/ShareSectionModal.vue'
 
 const props = defineProps({
   section: { type: Object, required: true },
 })
 
 const navStore = useNavStore()
+const sharingStore = useSharingStore()
 const router = useRouter()
 
 const collapsed = ref(false)
 const hovered = ref(false)
+const showShareModal = ref(false)
+
+// Role is computed from the section's own owner_id plus any section_access
+// grant — 'owner' | 'editor' | 'viewer' | null. Rename/delete/share stay
+// owner-only (see notes/notecord-sharing-feature-prompt.md); "add page" is
+// also open to a whole-section editor grant, matching pages:create's guard.
+const role = computed(() =>
+  sharingStore.roleFor({ ownerId: props.section.owner_id, sectionId: props.section.id, pageId: null })
+)
+const isOwner = computed(() => role.value === 'owner')
+const canAddPage = computed(() => role.value === 'owner' || role.value === 'editor')
+const isShared = computed(() => role.value !== 'owner')
+const hasGrants = computed(() => isOwner.value && sharingStore.grantsGivenForSection(props.section.id).length > 0)
 
 // Rename (modal)
 const showRenameModal = ref(false)
@@ -235,6 +267,12 @@ async function confirmDelete() {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+.shared-badge {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  opacity: 0.85;
 }
 
 /* Hover action buttons */

@@ -33,6 +33,22 @@ const TOKEN = process.env.ADMIN_TOKEN ?? envFile.ADMIN_TOKEN
 const ASSET_TOKEN = process.env.ASSET_TOKEN ?? envFile.ASSET_TOKEN
 const APP_USER_EMAIL = process.env.APP_USER_EMAIL ?? envFile.APP_USER_EMAIL
 const APP_USER_PASSWORD = process.env.APP_USER_PASSWORD ?? envFile.APP_USER_PASSWORD
+const DB_USER = process.env.DB_USER ?? envFile.DB_USER
+const DB_DATABASE = process.env.DB_DATABASE ?? envFile.DB_DATABASE
+
+// Directus's schema API (createField/createRelation) has no way to express a
+// partial unique index, so section_access's uniqueness constraint (below)
+// goes straight to Postgres via `docker compose exec`, piping SQL over
+// stdin to sidestep shell-quoting issues. Idempotent (IF NOT EXISTS) like
+// everything else in this script.
+function runSql(sql) {
+  const { execSync } = require('child_process')
+  execSync(`docker compose exec -T database psql -U ${DB_USER} -d ${DB_DATABASE} -v ON_ERROR_STOP=1`, {
+    cwd: __dirname,
+    input: sql,
+    stdio: ['pipe', 'inherit', 'inherit'],
+  })
+}
 
 async function req(method, path, body) {
   const res = await fetch(`${BASE}${path}`, {
@@ -256,6 +272,289 @@ async function main() {
     ],
     { icon: 'attach_file', sort_field: 'sort_order' }
   )
+
+  // ── section_access ───────────────────────────────────────────────────────────
+  // A grant of viewer/editor access to a section (page_id: null) or a single
+  // page within it (page_id: set), given by the section's owner to another
+  // user. See notes/notecord-sharing-feature-prompt.md for the full design.
+  console.log('Creating "section_access" collection…')
+  await createCollection(
+    'section_access',
+    [
+      primaryKey(),
+      { field: 'section_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'page_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o' }, schema: { is_nullable: true } },
+      { field: 'user_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { ...stringField('role', false, 'viewer'), meta: { interface: 'select-dropdown', options: { choices: [{ text: 'Viewer', value: 'viewer' }, { text: 'Editor', value: 'editor' }] }, required: true }, schema: { is_nullable: false, default_value: 'viewer' } },
+      { field: 'granted_by', type: 'uuid', meta: { interface: 'select-dropdown-m2o' }, schema: { is_nullable: true } },
+      dateField('date_created', 'date-created'),
+    ],
+    { icon: 'share' }
+  )
+  await createRelation('section_access', 'section_id', 'sections', 'CASCADE', { one_field: 'section_access' })
+  await createRelation('section_access', 'page_id', 'pages', 'CASCADE', { one_field: 'section_access' })
+  await createRelation('section_access', 'user_id', 'directus_users', 'CASCADE')
+  await createRelation('section_access', 'granted_by', 'directus_users', 'SET NULL')
+
+  // Plain unique index on (section_id, page_id, user_id) can't stop duplicate
+  // whole-section grants — Postgres treats NULL != NULL, so two page_id:null
+  // rows for the same section/user wouldn't collide. Two partial indexes
+  // instead: one for the whole-section case, one for the page-level case.
+  console.log('Ensuring section_access uniqueness indexes…')
+  runSql(`
+    CREATE UNIQUE INDEX IF NOT EXISTS section_access_whole_section_unique
+      ON section_access (section_id, user_id) WHERE page_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS section_access_page_unique
+      ON section_access (section_id, page_id, user_id) WHERE page_id IS NOT NULL;
+  `)
+  console.log('  ✓ section_access uniqueness indexes present')
+
+  // Directus's declarative `permissions` filter is NOT enforced on the
+  // `create` action for a relational dot-path — confirmed empirically: a
+  // non-owner could create a section_access grant on someone else's
+  // section, and a viewer could attach a note_files row to a note they
+  // didn't own, despite both permission rows having the "right" filter
+  // shape. `validation` doesn't help either: it checks the literal
+  // submitted payload rather than resolving the relation, so it just
+  // rejects *everyone*, including legitimate owners. A Directus Flow (event
+  // trigger, type 'filter', scope 'items.create') is the only mechanism
+  // that can actually read the related row and decide — see
+  // notes/notecord-sharing-feature-prompt.md for the full writeup. Recreated
+  // from scratch on every run (delete-if-exists) rather than patched in
+  // place — simpler to keep correct than diffing a 3-operation graph, and
+  // nothing else references these flows' generated ids.
+  async function upsertCreateOwnerGuardFlow(name, collection, relatedField, relatedCollection) {
+    const existing = await findOne('flows', 'name', name)
+    if (existing) {
+      await req('DELETE', `/flows/${existing.id}`)
+    }
+
+    const flow = await req('POST', '/flows', {
+      name,
+      icon: 'bolt',
+      status: 'active',
+      trigger: 'event',
+      accountability: 'all',
+      options: { type: 'filter', scope: ['items.create'], collections: [collection] },
+    })
+
+    const readOp = await req('POST', '/operations', {
+      name: `Read ${relatedCollection}`,
+      key: 'read_related',
+      type: 'item-read',
+      position_x: 19,
+      position_y: 1,
+      options: {
+        collection: relatedCollection,
+        key: `{{$trigger.payload.${relatedField}}}`,
+        query: { fields: ['owner_id'] },
+      },
+      flow: flow.id,
+    })
+
+    const throwOp = await req('POST', '/operations', {
+      name: 'Reject (not owner)',
+      key: 'reject_not_owner',
+      type: 'exec',
+      position_x: 39,
+      position_y: 3,
+      options: {
+        code: `module.exports = async function() {\n  throw new Error('Only the owner of the related ${relatedCollection} row may do this.');\n};`,
+      },
+      flow: flow.id,
+    })
+
+    const condOp = await req('POST', '/operations', {
+      name: 'Check owner',
+      key: 'check_owner',
+      type: 'condition',
+      position_x: 19,
+      position_y: 3,
+      options: { filter: { read_related: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      flow: flow.id,
+      resolve: null,
+      reject: throwOp.id,
+    })
+
+    await req('PATCH', `/operations/${readOp.id}`, { resolve: condOp.id })
+    await req('PATCH', `/flows/${flow.id}`, { operation: readOp.id })
+    console.log(`  ✓ (re)created flow "${name}" (${collection}:create guarded by ${relatedCollection}.owner_id)`)
+  }
+
+  console.log('Setting up create-time ownership guard flows (section_access, note_files)…')
+  await upsertCreateOwnerGuardFlow(
+    'Guard: section_access create requires section ownership',
+    'section_access',
+    'section_id',
+    'sections'
+  )
+  await upsertCreateOwnerGuardFlow(
+    'Guard: note_files create requires note ownership',
+    'note_files',
+    'note_id',
+    'notes'
+  )
+
+  // pages:create and notes:create turn out to have the exact same
+  // create-action gap, but pre-existing and unrelated to sharing — there
+  // was NEVER a check that section_id/page_id in the payload belongs to the
+  // caller. Any authenticated app user could inject a page into someone
+  // else's section, or a note into someone else's page, with zero
+  // relationship between them (confirmed empirically). Harmless while
+  // APP_USER_EMAIL was the only real account; live risk now that the app is
+  // genuinely multi-user. These two guards are one step more complex than
+  // the pair above — "owner OR a qualifying grant exists" rather than just
+  // "owner" — so unlike upsertCreateOwnerGuardFlow they're written out
+  // directly rather than forced through a shared helper.
+  async function upsertFlow(name, collection, operations) {
+    const existing = await findOne('flows', 'name', name)
+    if (existing) await req('DELETE', `/flows/${existing.id}`)
+
+    const flow = await req('POST', '/flows', {
+      name,
+      icon: 'bolt',
+      status: 'active',
+      trigger: 'event',
+      accountability: 'all',
+      options: { type: 'filter', scope: ['items.create'], collections: [collection] },
+    })
+
+    const created = {}
+    for (const op of operations) {
+      created[op.key] = await req('POST', '/operations', { ...op.body, key: op.key, flow: flow.id })
+    }
+    for (const op of operations) {
+      const patch = {}
+      if (op.resolveKey !== undefined) patch.resolve = op.resolveKey ? created[op.resolveKey].id : null
+      if (op.rejectKey !== undefined) patch.reject = op.rejectKey ? created[op.rejectKey].id : null
+      if (Object.keys(patch).length) await req('PATCH', `/operations/${created[op.key].id}`, patch)
+    }
+    await req('PATCH', `/flows/${flow.id}`, { operation: created[operations[0].key].id })
+    console.log(`  ✓ (re)created flow "${name}"`)
+  }
+
+  await upsertFlow('Guard: pages create requires section ownership or editor grant', 'pages', [
+    {
+      key: 'read_section',
+      body: {
+        name: 'Read Section',
+        type: 'item-read',
+        position_x: 19,
+        position_y: 1,
+        options: { collection: 'sections', key: '{{$trigger.payload.section_id}}', query: { fields: ['owner_id'] } },
+      },
+      resolveKey: 'is_owner',
+    },
+    {
+      key: 'is_owner',
+      body: {
+        name: 'Is owner?',
+        type: 'condition',
+        position_x: 19,
+        position_y: 3,
+        options: { filter: { read_section: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null, // condition true → allow, stop here
+      rejectKey: 'read_grant',
+    },
+    {
+      key: 'read_grant',
+      body: {
+        name: 'Read whole-section editor grant',
+        type: 'item-read',
+        position_x: 39,
+        position_y: 5,
+        options: {
+          collection: 'section_access',
+          query: {
+            filter: {
+              section_id: { _eq: '{{$trigger.payload.section_id}}' },
+              user_id: { _eq: '{{$accountability.user}}' },
+              role: { _eq: 'editor' },
+              page_id: { _null: true },
+            },
+            limit: 1,
+          },
+        },
+      },
+      resolveKey: 'check_grant',
+    },
+    {
+      key: 'check_grant',
+      body: {
+        name: 'Check grant found',
+        type: 'exec',
+        position_x: 59,
+        position_y: 3,
+        options: {
+          code: "module.exports = async function(data) {\n  if (Array.isArray(data.read_grant) && data.read_grant.length > 0) return true;\n  throw new Error('Only the section owner or a whole-section editor may create a page here.');\n};",
+        },
+      },
+    },
+  ])
+
+  await upsertFlow('Guard: notes create requires page ownership or a matching grant', 'notes', [
+    {
+      key: 'read_page',
+      body: {
+        name: 'Read Page',
+        type: 'item-read',
+        position_x: 19,
+        position_y: 1,
+        options: { collection: 'pages', key: '{{$trigger.payload.page_id}}', query: { fields: ['owner_id', 'section_id'] } },
+      },
+      resolveKey: 'is_owner',
+    },
+    {
+      key: 'is_owner',
+      body: {
+        name: 'Is owner?',
+        type: 'condition',
+        position_x: 19,
+        position_y: 3,
+        options: { filter: { read_page: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null,
+      rejectKey: 'read_grant',
+    },
+    {
+      key: 'read_grant',
+      // Any role — viewers can post too (see the sharing feature doc's
+      // "viewers can post" decision). Direct page grant OR inherited
+      // whole-section grant, either is sufficient.
+      body: {
+        name: 'Read direct or whole-section grant',
+        type: 'item-read',
+        position_x: 39,
+        position_y: 5,
+        options: {
+          collection: 'section_access',
+          query: {
+            filter: {
+              _or: [
+                { page_id: { _eq: '{{$trigger.payload.page_id}}' }, user_id: { _eq: '{{$accountability.user}}' } },
+                { section_id: { _eq: '{{read_page.section_id}}' }, page_id: { _null: true }, user_id: { _eq: '{{$accountability.user}}' } },
+              ],
+            },
+            limit: 1,
+          },
+        },
+      },
+      resolveKey: 'check_grant',
+    },
+    {
+      key: 'check_grant',
+      body: {
+        name: 'Check grant found',
+        type: 'exec',
+        position_x: 59,
+        position_y: 3,
+        options: {
+          code: "module.exports = async function(data) {\n  if (Array.isArray(data.read_grant) && data.read_grant.length > 0) return true;\n  throw new Error('No access to post here.');\n};",
+        },
+      },
+    },
+  ])
 
   // ── backup_status ────────────────────────────────────────────────────────────
   // Written by backend/backup/backup-db.sh and export-notes.js after each
@@ -506,45 +805,176 @@ async function main() {
     console.log('  ↳ policy "NoteCord App Access" already exists, skipping')
   }
 
-  // sections/pages/notes: all three fully ownership-scoped — each user only
-  // ever sees/edits their own sections, pages, and notes, giving every user
-  // an entirely separate workspace on the same backend. `create` is stamped
+  // sections/pages/notes: ownership-scoped by default (owner_id ===
+  // $CURRENT_USER), loosened selectively by section_access grants — see
+  // notes/notecord-sharing-feature-prompt.md. `create` is stamped
   // server-side via a preset — `fields` deliberately excludes owner_id so a
   // client can't just send its own value in the request body (a preset only
   // fills in a field that's *absent*; it does nothing if the field is
-  // writable and submitted). `read`/`update`/`delete` are scoped to rows the
-  // caller owns, enforced by Directus at the query level, not just hidden
-  // client-side.
-  const ownershipScopedCreateFields = {
-    sections: ['id', 'name', 'emoji', 'sort_order'],
-    pages: ['id', 'name', 'emoji', 'section_id', 'sort_order'],
-    notes: ['id', 'page_id', 'content'],
-  }
-  for (const collection of ['sections', 'pages', 'notes']) {
-    await upsertPermission(appPolicy.id, collection, 'create', {
-      fields: ownershipScopedCreateFields[collection],
-      presets: { owner_id: '$CURRENT_USER' },
+  // writable and submitted).
+  //
+  // sharedGrant(extra) matches a section_access row granted directly to the
+  // current user (on a section or a single page); sharedViaWholeSection
+  // matches a page reached through a whole-section grant (page_id: null) on
+  // its parent section. Both take an optional role filter so update/delete
+  // can require role: 'editor' while read stays open to viewer + editor.
+  const sharedGrant = (extra = {}) => ({
+    section_access: { user_id: { _eq: '$CURRENT_USER' }, ...extra },
+  })
+  const sharedViaWholeSection = (extra = {}) => ({
+    section_id: { section_access: { user_id: { _eq: '$CURRENT_USER' }, page_id: { _null: true }, ...extra } },
+  })
+  const editorOnly = { role: { _eq: 'editor' } }
+
+  // ── sections ─────────────────────────────────────────────────────────────
+  // Sharing only ever grants visibility into a section's contents, never
+  // rename/delete of the section itself — that stays owner-only, full stop.
+  await upsertPermission(appPolicy.id, 'sections', 'create', {
+    fields: ['id', 'name', 'emoji', 'sort_order'],
+    presets: { owner_id: '$CURRENT_USER' },
+  })
+  await upsertPermission(appPolicy.id, 'sections', 'read', {
+    fields: '*',
+    permissions: { _or: [{ owner_id: { _eq: '$CURRENT_USER' } }, sharedGrant()] },
+  })
+  for (const action of ['update', 'delete']) {
+    await upsertPermission(appPolicy.id, 'sections', action, {
+      fields: '*',
+      permissions: { owner_id: { _eq: '$CURRENT_USER' } },
     })
-    for (const action of ['read', 'update', 'delete']) {
-      await upsertPermission(appPolicy.id, collection, action, {
-        fields: '*',
-        permissions: { owner_id: { _eq: '$CURRENT_USER' } },
-      })
-    }
+  }
+
+  // ── pages ────────────────────────────────────────────────────────────────
+  // read is open to viewer + editor (direct page grant or inherited
+  // whole-section grant); update/delete additionally require role: 'editor'.
+  await upsertPermission(appPolicy.id, 'pages', 'create', {
+    fields: ['id', 'name', 'emoji', 'section_id', 'sort_order'],
+    presets: { owner_id: '$CURRENT_USER' },
+  })
+  // Bug found via the two-account browser smoke test (2026-07-27): an
+  // editor can create their own pages/notes within a shared section (per
+  // spec), which stamps *their* owner_id on the new row, not the section
+  // owner's. Without an explicit "I own the section this belongs to"
+  // branch, the section owner had NO permission path back to their own
+  // collaborator's content — reading their own section came back empty.
+  // This never mattered pre-sharing (every row in your space was always
+  // authored by you), so it's a genuinely new failure mode.
+  await upsertPermission(appPolicy.id, 'pages', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { owner_id: { _eq: '$CURRENT_USER' } },
+        { section_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        sharedGrant(),
+        sharedViaWholeSection(),
+      ],
+    },
+  })
+  for (const action of ['update', 'delete']) {
+    await upsertPermission(appPolicy.id, 'pages', action, {
+      fields: '*',
+      permissions: {
+        _or: [{ owner_id: { _eq: '$CURRENT_USER' } }, sharedGrant(editorOnly), sharedViaWholeSection(editorOnly)],
+      },
+    })
+  }
+
+  // ── notes ────────────────────────────────────────────────────────────────
+  // Discord-style ownership, not Google-Docs-style shared editing: viewer
+  // AND editor can read/create in a shared page (walking up page_id →
+  // section_id to reach section_access), but update/delete stay strictly
+  // owner_id-only — a shared editor can edit/delete their *own* notes (which
+  // they own via the create preset below) but never anyone else's, no
+  // exception. Do not add a section_access branch to update/delete here.
+  await upsertPermission(appPolicy.id, 'notes', 'create', {
+    fields: ['id', 'page_id', 'content'],
+    presets: { owner_id: '$CURRENT_USER' },
+    permissions: {
+      _or: [
+        { owner_id: { _eq: '$CURRENT_USER' } },
+        { page_id: sharedGrant() },
+        { page_id: sharedViaWholeSection() },
+      ],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'notes', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { owner_id: { _eq: '$CURRENT_USER' } },
+        // I own the page (or the section it's in) this note lives in — see
+        // the pages:read comment above for why this branch exists.
+        { page_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { page_id: sharedGrant() },
+        { page_id: sharedViaWholeSection() },
+      ],
+    },
+  })
+  for (const action of ['update', 'delete']) {
+    await upsertPermission(appPolicy.id, 'notes', action, {
+      fields: '*',
+      permissions: { owner_id: { _eq: '$CURRENT_USER' } },
+    })
   }
 
   // note_files: has no owner_id of its own — ownership is inherited from the
   // parent note via a nested relational filter through note_id.owner_id.
   // `create` stays unscoped (fields:'*', no filter): a client can only ever
-  // attach a file to a note it's already allowed to update, per the
-  // notes:update permission above, so there's nothing extra to enforce here.
+  // attach a file to a note it's already allowed to update, and since
+  // notes:create presets owner_id to the creator, a shared user's own note
+  // already satisfies notes:update — nothing extra to enforce here. `read`
+  // extends the same way notes:read does (4 hops: note_id → page_id →
+  // section_id → section_access — this is the deepest chain in the feature,
+  // verify it actually works before relying on it). `update`/`delete` stay
+  // owner_id-only, same Discord-style rule as notes above.
   await upsertPermission(appPolicy.id, 'note_files', 'create', { fields: '*' })
-  for (const action of ['read', 'update', 'delete']) {
+  await upsertPermission(appPolicy.id, 'note_files', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        // Same owner-of-parent gap as notes:read above, one hop further out.
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+        { note_id: { page_id: sharedGrant() } },
+        { note_id: { page_id: sharedViaWholeSection() } },
+      ],
+    },
+  })
+  for (const action of ['update', 'delete']) {
     await upsertPermission(appPolicy.id, 'note_files', action, {
       fields: '*',
       permissions: { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
     })
   }
+
+  // directus_users:read — needed so the share modal can search/select a
+  // user to grant access to. Scoped to safe fields only: never expose the
+  // password hash or other system fields, and no row-level filter (any app
+  // user can look another up by name/email to share with).
+  await upsertPermission(appPolicy.id, 'directus_users', 'read', {
+    fields: ['id', 'first_name', 'last_name', 'email'],
+  })
+
+  // section_access: create/delete are owner-of-the-target-section-only (this
+  // is how "share" and "unshare" work — no separate revoke endpoint needed).
+  // No update permission at all: to change a role, delete and recreate.
+  await upsertPermission(appPolicy.id, 'section_access', 'create', {
+    fields: ['id', 'section_id', 'page_id', 'user_id', 'role'],
+    presets: { granted_by: '$CURRENT_USER' },
+    permissions: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+  })
+  await upsertPermission(appPolicy.id, 'section_access', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [{ user_id: { _eq: '$CURRENT_USER' } }, { section_id: { owner_id: { _eq: '$CURRENT_USER' } } }],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'section_access', 'delete', {
+    fields: '*',
+    permissions: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+  })
 
   // directus_files:create stays unrestricted (fields:'*', no filter) — note
   // attachments are uploaded this way and never set owner_id.

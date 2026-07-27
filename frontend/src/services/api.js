@@ -4,6 +4,7 @@ import {
   authentication,
   readItems,
   readMe,
+  readUsers,
   createItem,
   updateItem,
   deleteItem,
@@ -95,6 +96,47 @@ export async function getOlderNotes(pageId, beforeDate, limit) {
       sort: ['-date_created'],
       fields: ['*', 'files.*', 'files.file_id.*'],
       limit,
+    })
+  )
+}
+
+// ── Sharing ───────────────────────────────────────────────────────────────────
+
+// Every grant the caller can see: rows they're the grantee of, plus every
+// grant given out on sections they own (see setup-schema.js's
+// section_access:read permission) — expanded with just enough of the
+// grantee's profile to render "shared with jane@example.com" without a
+// second round trip.
+export async function listSectionAccess() {
+  return client.request(
+    readItems('section_access', {
+      limit: -1,
+      fields: ['*', 'user_id.id', 'user_id.first_name', 'user_id.last_name', 'user_id.email'],
+    })
+  )
+}
+
+export async function createSectionAccess(data) {
+  return client.request(createItem('section_access', data))
+}
+
+export async function deleteSectionAccess(id) {
+  return client.request(deleteItem('section_access', id))
+}
+
+// Share modal's user picker — email is the only reliable identifier here
+// (no username field), scoped server-side to safe fields only (see
+// directus_users:read in setup-schema.js).
+export async function searchUsers(query) {
+  const q = query.trim()
+  if (!q) return []
+  // directus_users is a system collection — the SDK requires the dedicated
+  // readUsers() composable, not readItems('directus_users', ...).
+  return client.request(
+    readUsers({
+      filter: { email: { _icontains: q } },
+      fields: ['id', 'first_name', 'last_name', 'email'],
+      limit: 10,
     })
   )
 }

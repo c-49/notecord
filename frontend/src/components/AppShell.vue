@@ -37,16 +37,22 @@ import ServerSidebar from '@/components/ServerSidebar.vue'
 import SearchSidebar from '@/components/search/SearchSidebar.vue'
 import { useNavStore } from '@/stores/navStore'
 import { useSearchStore } from '@/stores/searchStore'
+import { useSharingStore } from '@/stores/sharingStore'
 import { storeToRefs } from 'pinia'
 
 const navStore = useNavStore()
 const searchStore = useSearchStore()
+const sharingStore = useSharingStore()
 const { activePage } = storeToRefs(navStore)
 const sidebarOpen = ref(false)
 const router = useRouter()
 const route = useRoute()
 
 onMounted(async () => {
+  // Sharing grants aren't part of the offline Dexie mirror (online-only,
+  // see sharingStore.js) — load in parallel with nav rather than blocking
+  // it, since a failure here shouldn't stop the app from opening.
+  sharingStore.loadGrants().catch((e) => console.error('Failed to load sharing grants:', e))
   await navStore.loadNav()
   // After loading, auto-navigate to the first page if sitting on the home view
   if (route.name === 'home' && navStore.pages.length > 0) {

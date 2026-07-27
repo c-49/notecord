@@ -13,18 +13,26 @@
     >
       <span class="page-icon">{{ page.emoji ?? '#' }}</span>
       <span class="page-name">{{ page.name }}</span>
+      <span v-if="isShared" class="shared-badge" title="Shared with you">👥</span>
+      <span v-else-if="hasGrants" class="shared-badge" title="You've shared this">🔗</span>
     </RouterLink>
 
     <!-- Hover actions (sibling to the link, not inside it — always in the DOM
          so touch devices, which never fire mouseenter, can still reach them) -->
     <div class="page-actions">
-      <button class="action-btn" title="Rename" @click.stop="startRename">
+      <button v-if="canShare" class="action-btn" title="Share" @click.stop="showShareModal = true">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+      </button>
+      <button v-if="canManage" class="action-btn" title="Rename" @click.stop="startRename">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </button>
-      <button class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
+      <button v-if="canManage" class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"/>
           <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
@@ -69,6 +77,13 @@
         </div>
       </div>
     </Teleport>
+
+    <ShareSectionModal
+      v-if="showShareModal"
+      :section="section"
+      :page="page"
+      @close="showShareModal = false"
+    />
   </div>
 </template>
 
@@ -77,13 +92,20 @@
 import { ref, computed, nextTick } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { useNavStore } from '@/stores/navStore'
+import { useSharingStore } from '@/stores/sharingStore'
 import EmojiInput from '@/components/EmojiInput.vue'
+import ShareSectionModal from '@/components/ShareSectionModal.vue'
 
 const props = defineProps({
   page: { type: Object, required: true },
+  // Parent section, when this page belongs to one — omitted for root-level
+  // pages, which have no section to grant access against and so can never
+  // be shared (see notes/notecord-sharing-feature-prompt.md).
+  section: { type: Object, default: null },
 })
 
 const navStore = useNavStore()
+const sharingStore = useSharingStore()
 const route = useRoute()
 const router = useRouter()
 
@@ -94,8 +116,30 @@ const editEmoji = ref('')
 const renameModalInput = ref(null)
 const showDeleteConfirm = ref(false)
 const deleting = ref(false)
+const showShareModal = ref(false)
 
 const isActive = computed(() => route.params.pageId === String(props.page.id))
+
+// Rename/delete: page owner (regardless of section) OR an editor-role grant
+// covering this page — mirrors the pages:update/delete permission exactly.
+const pageRole = computed(() =>
+  sharingStore.roleFor({
+    ownerId: props.page.owner_id,
+    sectionId: props.section?.id ?? null,
+    pageId: props.page.id,
+  })
+)
+const canManage = computed(() => pageRole.value === 'owner' || pageRole.value === 'editor')
+const isShared = computed(() => !!props.section && pageRole.value !== 'owner')
+
+// Share is section-owner-only, always — even for a single-page grant (see
+// section_access:create's guard Flow) — so this checks the SECTION's
+// ownership, not the page's own.
+const canShare = computed(() =>
+  !!props.section &&
+  sharingStore.roleFor({ ownerId: props.section.owner_id, sectionId: props.section.id, pageId: null }) === 'owner'
+)
+const hasGrants = computed(() => canShare.value && sharingStore.grantsGivenForPage(props.page.id).length > 0)
 
 function startRename() {
   editName.value = props.page.name
@@ -173,6 +217,12 @@ async function confirmDelete() {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+}
+
+.shared-badge {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  opacity: 0.85;
 }
 
 .name-row {

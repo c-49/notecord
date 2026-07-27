@@ -3,8 +3,10 @@ import { ref, computed } from 'vue'
 import { db } from '@/services/db'
 import { syncAll, readNav } from '@/services/offlineData'
 import { queueMutation, requestDrain, drainQueue } from '@/services/mutationQueue'
+import { useAuthStore } from '@/stores/authStore'
 
 export const useNavStore = defineStore('nav', () => {
+  const authStore = useAuthStore()
   const sections = ref([])
   const pages = ref([])
   const activePageId = ref(null)
@@ -47,10 +49,19 @@ export const useNavStore = defineStore('nav', () => {
   }
 
   async function addSection(name, emoji = null) {
-    const item = { id: crypto.randomUUID(), name, emoji, sort_order: sections.value.length }
+    // owner_id is stamped server-side via a preset on create (see
+    // setup-schema.js) — it's never actually sent in the create request,
+    // but the locally-pushed reactive item needs it set immediately so
+    // owner-only UI (Share/rename/delete/add-page) doesn't flicker off
+    // until the next resync pulls the real value back down.
+    const item = {
+      id: crypto.randomUUID(), name, emoji, sort_order: sections.value.length,
+      owner_id: authStore.user?.id ?? null,
+    }
     sections.value.push(item)
     await db.sections.put(item)
-    await queueMutation('create', 'sections', item.id, item)
+    const { owner_id, ...payload } = item
+    await queueMutation('create', 'sections', item.id, payload)
     requestDrain()
     return item
   }
@@ -75,10 +86,16 @@ export const useNavStore = defineStore('nav', () => {
   }
 
   async function addPage(name, sectionId = null, emoji = null) {
-    const item = { id: crypto.randomUUID(), name, emoji, section_id: sectionId, sort_order: pages.value.length }
+    // See addSection() above — owner_id is preset server-side and never
+    // sent, but is needed locally right away for owner-only UI.
+    const item = {
+      id: crypto.randomUUID(), name, emoji, section_id: sectionId, sort_order: pages.value.length,
+      owner_id: authStore.user?.id ?? null,
+    }
     pages.value.push(item)
     await db.pages.put(item)
-    await queueMutation('create', 'pages', item.id, item)
+    const { owner_id, ...payload } = item
+    await queueMutation('create', 'pages', item.id, payload)
     requestDrain()
     return item
   }

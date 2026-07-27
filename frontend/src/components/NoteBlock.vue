@@ -8,7 +8,7 @@
   >
     <!-- Hover action toolbar (always in the DOM so touch devices, which never
          fire mouseenter, can still reach it — see @media (hover: none) below) -->
-    <div v-if="!editing" class="note-actions" :class="{ visible: highlighted }">
+    <div v-if="!editing && isOwnNote" class="note-actions" :class="{ visible: highlighted }">
       <button class="action-btn" title="Edit" @click.stop="startEdit">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
@@ -91,6 +91,7 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { formatNoteTimestamp } from '@/utils/dateUtils'
 import { useNotesStore } from '@/stores/notesStore'
+import { useAuthStore } from '@/stores/authStore'
 import { buildPinterestEmbeds, resolvePinterestEmbedHref } from '@/utils/pinterestWidget'
 import AttachmentRenderer from '@/components/attachments/AttachmentRenderer.vue'
 import RichTextEditor from '@/components/composer/RichTextEditor.vue'
@@ -100,6 +101,14 @@ const props = defineProps({
 })
 
 const notesStore = useNotesStore()
+const authStore = useAuthStore()
+
+// Discord-style ownership: only the note's own author can edit/delete it,
+// even a section editor collaborator — this mirrors notes:update/delete's
+// permission exactly (owner_id-only, no section_access override, ever).
+// Note rows created before sharing existed have no owner_id at all, so
+// treat a missing owner_id as "mine" rather than hiding the buttons.
+const isOwnNote = computed(() => !props.note.owner_id || props.note.owner_id === authStore.user?.id)
 
 const highlighted = ref(false)
 const editing = ref(false)
