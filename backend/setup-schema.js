@@ -273,9 +273,50 @@ async function main() {
       // succeeds, not on every write to the row.
       { field: 'last_success_at', type: 'timestamp', meta: { interface: 'datetime' }, schema: { is_nullable: true } },
       stringField('detail', true),
+      // { formatName: directus_files id } — e.g. {"dump": "<uuid>"} for db,
+      // {"html": "<uuid>", "pdf": "<uuid>", "docx": "<uuid>"} for export.
+      // Lets the frontend download the latest artifact the same way any
+      // other file reference works, without a dedicated relation.
+      { field: 'files', type: 'json', meta: { interface: 'input-code', options: { language: 'json' } }, schema: { is_nullable: true } },
     ],
     { icon: 'cloud_done' }
   )
+  // createCollection only sets fields at creation time — this covers
+  // installs where backup_status already existed before `files` was added.
+  await createField('backup_status', {
+    field: 'files',
+    type: 'json',
+    meta: { interface: 'input-code', options: { language: 'json' } },
+    schema: { is_nullable: true },
+  })
+
+  // ── export_requests ──────────────────────────────────────────────────────────
+  // A user clicks "Request export" (create, owner-stamped) → export-personal.js
+  // (cron, every minute) picks up pending rows, renders that one user's data
+  // only, uploads the result tagged with their owner_id, and marks it ready.
+  // One row per user at a time — export-personal.js deletes a user's older
+  // requests (and their files) once a new one settles, same "current copy
+  // only" approach as backup_status.
+  console.log('Creating "export_requests" collection…')
+  await createCollection(
+    'export_requests',
+    [
+      primaryKey(),
+      { ...stringField('status', false, 'pending'), schema: { is_nullable: false, default_value: 'pending' } },
+      dateField('requested_at', 'date-created'),
+      { field: 'completed_at', type: 'timestamp', meta: { interface: 'datetime' }, schema: { is_nullable: true } },
+      stringField('detail', true),
+      { field: 'files', type: 'json', meta: { interface: 'input-code', options: { language: 'json' } }, schema: { is_nullable: true } },
+    ],
+    { icon: 'download' }
+  )
+  await createField('export_requests', {
+    field: 'owner_id',
+    type: 'uuid',
+    meta: { interface: 'select-dropdown-m2o', special: ['m2o'] },
+    schema: { is_nullable: true },
+  })
+  await createRelation('export_requests', 'owner_id', 'directus_users', 'SET NULL')
 
   // ── Relations ────────────────────────────────────────────────────────────────
   console.log('\nCreating relations…')
@@ -310,6 +351,21 @@ async function main() {
     await createRelation(collection, 'owner_id', 'directus_users', 'SET NULL')
   }
 
+  // directus_files.owner_id: same shape, extended onto the system files
+  // collection. ONLY export-personal.js sets this (on a user's own export
+  // artifacts) — every regular note attachment (uploaded via uploadFile()
+  // in api.js) leaves it null, exactly as before this field existed. That's
+  // what makes the read-permission change below additive-safe rather than
+  // a regression: existing attachments stay universally readable (null),
+  // and only owner-tagged files gain a restriction.
+  await createField('directus_files', {
+    field: 'owner_id',
+    type: 'uuid',
+    meta: { interface: 'select-dropdown-m2o', special: ['m2o'] },
+    schema: { is_nullable: true },
+  })
+  await createRelation('directus_files', 'owner_id', 'directus_users', 'SET NULL')
+
   // ── Permissions ──────────────────────────────────────────────────────────────
   // In Directus 11, admin_access:true only grants panel access.
   // User-created collections also need explicit CRUD permissions per policy.
@@ -340,18 +396,22 @@ async function main() {
   // backup_status: admin policies get full CRUD (needed for the backup
   // scripts' ADMIN_TOKEN to write it) — kept out of userCollections above
   // since the app-facing policy below only gets read access to this one.
+  // Uses upsertPermission (converge-to-one-row), not POST-and-catch —
+  // Directus doesn't reject a duplicate (policy, collection, action) row,
+  // so the old pattern silently multiplied rows on every re-run instead of
+  // skipping.
   for (const policy of policies) {
     for (const action of actions) {
-      try {
-        await req('POST', '/permissions', { policy: policy.id, collection: 'backup_status', action, fields: '*' })
-        console.log(`  ✓ ${policy.name} → backup_status:${action}`)
-      } catch (e) {
-        if (e.message.includes('duplicate') || e.message.includes('Unique constraint') || e.message.includes('already')) {
-          console.log(`  ↳ backup_status:${action} already set`)
-        } else {
-          throw e
-        }
-      }
+      await upsertPermission(policy.id, 'backup_status', action, { fields: '*' })
+    }
+  }
+
+  // export_requests: same reasoning — admin policies (ADMIN_TOKEN, used by
+  // export-personal.js) get full CRUD; the app policy below gets a much
+  // narrower create+read-your-own instead.
+  for (const policy of policies) {
+    for (const action of actions) {
+      await upsertPermission(policy.id, 'export_requests', action, { fields: '*' })
     }
   }
 
@@ -486,24 +546,63 @@ async function main() {
     })
   }
 
-  for (const action of ['create', 'read']) {
-    await upsertPermission(appPolicy.id, 'directus_files', action, { fields: '*' })
-  }
+  // directus_files:create stays unrestricted (fields:'*', no filter) — note
+  // attachments are uploaded this way and never set owner_id.
+  await upsertPermission(appPolicy.id, 'directus_files', 'create', { fields: '*' })
+  // directus_files:read used to be fully unrestricted too. Now scoped to
+  // "no owner (every existing/regular attachment) OR owned by me (my own
+  // export-personal.js artifacts)" — additive-safe: every attachment that
+  // exists today has owner_id:null and stays exactly as readable as before;
+  // the only new restriction applies to owner-tagged personal-export files.
+  // This is still load-bearing for existing attachments: FileAttachment.vue
+  // / ImageAttachment.vue render filename/size from the `files.file_id.*`
+  // nested expansion in getRecentNotes/etc. (api.js), fetched through the
+  // caller's own session — not just the static asset token used for the
+  // actual image/file bytes.
+  await upsertPermission(appPolicy.id, 'directus_files', 'read', {
+    fields: '*',
+    permissions: { _or: [{ owner_id: { _null: true } }, { owner_id: { _eq: '$CURRENT_USER' } }] },
+  })
 
-  // backup_status: read-only for the app policy — it displays the "Last
-  // backup" indicator but must never be able to write this collection
-  // (only the backup scripts' ADMIN_TOKEN does that). Kept outside the
-  // block above so it's still granted on a re-run against an instance where
-  // "NoteCord App Access" already existed before backup_status was added.
-  try {
-    await req('POST', '/permissions', { policy: appPolicy.id, collection: 'backup_status', action: 'read', fields: '*' })
-    console.log('  ✓ granted backup_status:read to "NoteCord App Access"')
-  } catch (e) {
-    if (e.message.includes('duplicate') || e.message.includes('Unique constraint') || e.message.includes('already')) {
-      console.log('  ↳ backup_status:read already set')
-    } else {
-      throw e
+  // export_requests: a user can create their own (owner stamped via preset,
+  // nothing else client-writable — the row starts as {status:'pending'} by
+  // schema default) and read only their own. No update/delete — only
+  // export-personal.js (ADMIN_TOKEN) transitions status/fills in `files`.
+  await upsertPermission(appPolicy.id, 'export_requests', 'create', {
+    fields: [],
+    presets: { owner_id: '$CURRENT_USER' },
+  })
+  await upsertPermission(appPolicy.id, 'export_requests', 'read', {
+    fields: '*',
+    permissions: { owner_id: { _eq: '$CURRENT_USER' } },
+  })
+
+  // backup_status used to be granted read-only to every "NoteCord App
+  // Access" user (single-user-era assumption). Now that NoteCord is
+  // genuinely multi-user, that's an over-broad grant — every user's
+  // sections/pages/notes are private via owner_id, but backup_status and
+  // the files it references cover the *whole instance*. Revoke it here
+  // unconditionally; access is re-granted below to one specific user only,
+  // via a policy attached directly to their account.
+  //
+  // Directus does NOT reject a duplicate (policy, collection, action)
+  // permission row — repeated runs of the old "POST and catch duplicate"
+  // pattern silently created a new row every time instead of erroring, so
+  // this deletes every match, not just one (confirmed multiple stale rows
+  // existed here from prior runs — a single findOne+delete left the grant
+  // still active via the leftover duplicates).
+  const staleBackupPerms = await req(
+    'GET',
+    `/permissions?filter[policy][_eq]=${appPolicy.id}&filter[collection][_eq]=backup_status&filter[action][_eq]=read&limit=-1`
+  )
+  const staleBackupPermRows = staleBackupPerms.data ?? staleBackupPerms
+  if (staleBackupPermRows.length) {
+    for (const row of staleBackupPermRows) {
+      await req('DELETE', `/permissions/${row.id}`)
     }
+    console.log(`  ✓ revoked backup_status:read from "NoteCord App Access" (${staleBackupPermRows.length} stale row(s) removed, now admin-only, see below)`)
+  } else {
+    console.log('  ↳ "NoteCord App Access" has no backup_status:read to revoke, skipping')
   }
 
   const appRoleFull = await req('GET', `/roles/${appRole.id}`)
@@ -516,9 +615,9 @@ async function main() {
     console.log('  ↳ "NoteCord User" role already has a policy linked, skipping')
   }
 
-  const appUser = await findOne('users', 'email', APP_USER_EMAIL)
+  let appUser = await findOne('users', 'email', APP_USER_EMAIL)
   if (!appUser) {
-    await req('POST', '/users', {
+    appUser = await req('POST', '/users', {
       email: APP_USER_EMAIL,
       password: APP_USER_PASSWORD,
       role: appRole.id,
@@ -527,6 +626,56 @@ async function main() {
     console.log(`  ✓ created app login user "${APP_USER_EMAIL}"`)
   } else {
     console.log(`  ↳ app login user "${APP_USER_EMAIL}" already exists, skipping`)
+  }
+
+  // ── Backup access: one specific user only, not the shared app role ──────────
+  // pg_dump / export-notes.js operate on the whole instance — every user's
+  // data, unfiltered — so backup_status and the files it references must
+  // NOT be visible to every "NoteCord User". Directus lets a policy attach
+  // directly to a single user, independent of role, which is exactly the
+  // tool for "one extra privilege for one specific person": APP_USER_EMAIL
+  // (the original account) gets it; everyone else sharing the "NoteCord
+  // User" role does not.
+  console.log('\nSetting up admin-only backup access…')
+
+  let backupsFolder = await findOne('folders', 'name', 'Backups')
+  if (!backupsFolder) {
+    backupsFolder = await req('POST', '/folders', { name: 'Backups' })
+    console.log('  ✓ created "Backups" folder')
+  } else {
+    console.log('  ↳ "Backups" folder already exists, skipping')
+  }
+
+  let backupAdminPolicy = await findOne('policies', 'name', 'Backup Admin')
+  if (!backupAdminPolicy) {
+    backupAdminPolicy = await req('POST', '/policies', {
+      name: 'Backup Admin',
+      icon: 'admin_panel_settings',
+      admin_access: false,
+      app_access: false,
+    })
+    console.log('  ✓ created policy "Backup Admin"')
+  } else {
+    console.log('  ↳ policy "Backup Admin" already exists, skipping')
+  }
+  // Converges every run (not create-once) since this is exactly the case
+  // upsertPermission exists for — the folder filter below needs to reflect
+  // backupsFolder.id even if the policy already existed from a prior run.
+  await upsertPermission(backupAdminPolicy.id, 'backup_status', 'read', { fields: '*' })
+  await upsertPermission(backupAdminPolicy.id, 'directus_files', 'read', {
+    fields: '*',
+    permissions: { folder: { _eq: backupsFolder.id } },
+  })
+
+  const appUserFull = await req('GET', `/users/${appUser.id}?fields=policies.policy.id`)
+  const alreadyLinked = (appUserFull.policies ?? []).some((p) => p.policy?.id === backupAdminPolicy.id)
+  if (!alreadyLinked) {
+    await req('PATCH', `/users/${appUser.id}`, {
+      policies: { create: [{ policy: { id: backupAdminPolicy.id } }], update: [], delete: [] },
+    })
+    console.log(`  ✓ attached "Backup Admin" policy directly to ${APP_USER_EMAIL}`)
+  } else {
+    console.log(`  ↳ "Backup Admin" policy already attached to ${APP_USER_EMAIL}, skipping`)
   }
 
   console.log('\n✅ Schema setup complete!\n')

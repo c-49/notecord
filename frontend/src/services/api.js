@@ -177,10 +177,50 @@ export async function uploadFile(file) {
 
 // ── Backup status ─────────────────────────────────────────────────────────────
 
-// Read-only for this app's login role — written by backend/backup/*.js/.sh,
-// used only to show "Last backup: ..." in the sidebar.
+// backup_status covers the whole instance (every user's data), so unlike
+// every other collection here it is NOT readable by every "NoteCord User" —
+// only the one account with the "Backup Admin" policy attached (see
+// setup-schema.js). For every other user this rejects; callers must treat
+// that as "no backup access" rather than an error to surface.
 export async function getBackupStatus() {
   return client.request(readItems('backup_status'))
+}
+
+// Downloads a backup file through the caller's own authenticated session —
+// deliberately NOT getFileUrl()'s static ASSET_TOKEN, which is a shared,
+// unauthenticated credential fine for a note-attachment thumbnail but wrong
+// for a whole-database dump. This goes through Directus's real permission
+// check for whichever user is actually logged in, same as every other call
+// in this file — only the "Backup Admin" policy holder can succeed.
+export async function downloadBackupFile(fileId, filename) {
+  const token = await client.getToken()
+  const res = await fetch(`${import.meta.env.VITE_DIRECTUS_URL}/assets/${fileId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ── Personal export ───────────────────────────────────────────────────────────
+
+// Every user can request an export of just their own notes (unlike
+// backup_status above). The row starts as {status:'pending'} — nothing to
+// send in the body, owner_id is stamped server-side via a preset.
+export async function requestExport() {
+  return client.request(createItem('export_requests', {}))
+}
+
+// Only the caller's own request rows are readable (owner_id scoping) —
+// there's ever at most one per user (export-personal.js prunes older ones
+// once a new one settles), so the latest is always the current state.
+export async function getMyExportRequests() {
+  return client.request(readItems('export_requests', { sort: ['-requested_at'], limit: 1 }))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

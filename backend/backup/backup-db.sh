@@ -30,29 +30,6 @@ fail() {
   exit 1
 }
 
-# Best-effort status ping for the frontend's "Last backup" sidebar indicator
-# (backup_status collection, see setup-schema.js). Never fails the run —
-# the actual backup already succeeded by the time this is called.
-report_status() {
-  local durl="${DIRECTUS_URL:-http://localhost:8055}"
-  local dtoken="${ADMIN_TOKEN:-}"
-  [ -z "$dtoken" ] && return 0
-  local existing_id now payload
-  existing_id=$(curl -sg -H "Authorization: Bearer $dtoken" \
-    "$durl/items/backup_status?filter[type][_eq]=db&limit=1&fields=id" 2>/dev/null \
-    | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
-  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  payload=$(printf '{"type":"db","last_success_at":"%s","detail":"%s"}' "$now" "$1")
-  if [ -n "$existing_id" ]; then
-    curl -s -X PATCH -H "Authorization: Bearer $dtoken" -H "Content-Type: application/json" \
-      -d "$payload" "$durl/items/backup_status/$existing_id" >/dev/null 2>&1
-  else
-    curl -s -X POST -H "Authorization: Bearer $dtoken" -H "Content-Type: application/json" \
-      -d "$payload" "$durl/items/backup_status" >/dev/null 2>&1
-  fi
-  return 0
-}
-
 # ── Load backend/.env (KEY=VALUE lines only, same convention as setup-schema.js) ──
 ENV_FILE="$BACKEND_DIR/.env"
 [ -f "$ENV_FILE" ] || fail "backend/.env not found — copy backend/.env.example and fill it in first"
@@ -125,7 +102,7 @@ END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 SIZE="$(du -ch "$DUMP_FILE" "$SQL_GZ_FILE" | tail -1 | cut -f1)"
 
-report_status "$SIZE, ${DURATION}s"
+node "$SCRIPT_DIR/lib/report-status.js" db "$SIZE, ${DURATION}s" "dump=$DUMP_FILE" || true
 
 log "SUCCESS" "size=$SIZE duration=${DURATION}s dump=$(basename "$DUMP_FILE")"
 echo "✅ Backup complete in ${DURATION}s (total size $SIZE)"

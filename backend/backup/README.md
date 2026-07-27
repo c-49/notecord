@@ -88,10 +88,34 @@ node export-notes.js
 # NoteCord backups — edit with `crontab -e`
 0  3 * * * cd /path/to/notecord/backend/backup && ./backup-db.sh    >> db/cron.log 2>&1
 15 3 * * * cd /path/to/notecord/backend/backup && node export-notes.js >> export/cron.log 2>&1
+* * * * *  cd /path/to/notecord/backend/backup && node export-personal.js >> export/personal-cron.log 2>&1
 ```
 
-The export is scheduled a few minutes after the DB dump so the two don't
-compete for disk/CPU on the VM.
+The nightly export is scheduled a few minutes after the DB dump so the two
+don't compete for disk/CPU on the VM. `export-personal.js` runs every
+minute but exits immediately (no Puppeteer launch) whenever there's nothing
+pending, so idle cost is one cheap HTTP call — see "Personal exports" below.
+
+## Personal exports (per-user, on-demand)
+
+Every logged-in user (not just the admin) can request an export of *just
+their own* notes from the app's Settings → Backups tab — this is a
+different mechanism from the nightly whole-instance backup above:
+
+- The click creates a row in `export_requests`, owner-stamped to that user.
+- `export-personal.js` (cron, every minute) picks up pending rows, renders
+  that one user's data via the same `lib/build-export.js` pipeline
+  `export-notes.js` uses (just filtered to their `owner_id`), and uploads
+  the result tagged with their `owner_id` on `directus_files` — so only
+  that user can read it back (see the `directus_files:read` permission in
+  `setup-schema.js`).
+- Exactly one request is kept per user — a new one requested (or
+  completed) prunes the previous request row and its uploaded files, so
+  neither `export_requests` nor `directus_uploads` grows unbounded.
+- These files are **not** synced to R2 and have no local-disk retention —
+  they're a convenience feature, not part of the disaster-recovery backup
+  system above. If a user needs their data back after real data loss, the
+  nightly whole-instance export/DB dump is still the actual backup.
 
 ## Restoring
 
