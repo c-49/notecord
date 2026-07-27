@@ -2,6 +2,7 @@ import {
   createDirectus,
   rest,
   authentication,
+  realtime,
   readItems,
   readMe,
   readUsers,
@@ -13,6 +14,11 @@ import {
 
 const client = createDirectus(import.meta.env.VITE_DIRECTUS_URL)
   .with(authentication('cookie', { credentials: 'include' }))
+  // Default reconnect budget is 10 retries at 1s apart (~10s) before the SDK
+  // gives up for good — bumped up as cheap insurance for longer blips; the
+  // 'online' listener below covers outages that outlast even this (laptop
+  // sleep, mobile backgrounding).
+  .with(realtime({ reconnect: { delay: 1000, retries: 20 } }))
   .with(rest())
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -198,6 +204,122 @@ export async function updateNote(id, data) {
 export async function deleteNote(id) {
   return client.request(deleteItem('notes', id))
 }
+
+// ── Realtime ──────────────────────────────────────────────────────────────────
+
+// One shared socket for the whole app — connected lazily on the first
+// subscribeToNotes() call (not at module load, so we're never opening a
+// socket before the user is actually authenticated). Per-page subscriptions
+// are cheap filters layered on top of it, not one socket per page.
+let connectPromise = null
+function ensureConnected() {
+  if (!connectPromise) {
+    connectPromise = client.connect().catch((e) => {
+      connectPromise = null
+      throw e
+    })
+  }
+  return connectPromise
+}
+
+// Tracks every currently-active subscription (keyed by pageId) so a dropped
+// connection can resubscribe everything once reconnected — see the 'online'
+// handler below. Each entry's `unsubscribe` is reassigned in place on every
+// (re)subscribe so a caller's dispose() always tears down the *current*
+// underlying subscription, not a stale one from before a reconnect.
+const activeSubscriptions = new Map()
+
+async function runSubscription(pageId, entry) {
+  // A note and its attachments are two separate collections/writes
+  // (queueMutation() sends the note's 'create' first, then a distinct
+  // 'note_files' create per attachment) — the note's own create event
+  // routinely arrives before its note_files rows exist server-side, so
+  // `files` on that event is often still empty. A second subscription on
+  // note_files (permission-checked via the same note_id → page_id →
+  // section_id → section_access chain as note_files:read — see
+  // setup-schema.js) fills the attachment in moments later instead of
+  // leaving it missing until the viewer's next reload.
+  const [notes, files] = await Promise.all([
+    client.subscribe('notes', {
+      filter: { page_id: { _eq: pageId } },
+      query: { fields: ['*', 'files.*', 'files.file_id.*'] },
+    }),
+    client.subscribe('note_files', {
+      event: 'create',
+      filter: { note_id: { page_id: { _eq: pageId } } },
+      query: { fields: ['*', 'file_id.*'] },
+    }),
+  ])
+  entry.unsubscribe = () => {
+    notes.unsubscribe()
+    files.unsubscribe()
+  }
+  ;(async () => {
+    try {
+      for await (const msg of notes.subscription) {
+        if (msg.event === 'create') entry.callbacks.onCreate?.(msg.data)
+        else if (msg.event === 'update') entry.callbacks.onUpdate?.(msg.data)
+        // event === 'delete': data is bare ids (string[]/number[]), not items.
+        else if (msg.event === 'delete') entry.callbacks.onDelete?.(msg.data)
+      }
+    } catch {
+      // The generator ends when unsubscribe() is called or the socket
+      // drops out from under it — nothing to do here either way; a dropped
+      // connection is handled by the 'online' listener below.
+    }
+  })()
+  ;(async () => {
+    try {
+      for await (const msg of files.subscription) {
+        if (msg.event === 'create') entry.callbacks.onFileCreate?.(msg.data)
+      }
+    } catch {
+      // Same as above.
+    }
+  })()
+}
+
+// Subscribes to create/update/delete events for one page's notes (plus
+// attachment arrivals — see runSubscription's note_files comment above).
+// Returns a { dispose } handle — call it on unmount/page change to avoid
+// leaking subscriptions when switching channels. Never throws: a realtime
+// failure degrades to "no live updates" rather than breaking the page (REST
+// + the Dexie mirror still work regardless).
+export async function subscribeToNotes(pageId, { onCreate, onUpdate, onDelete, onFileCreate } = {}) {
+  const entry = { callbacks: { onCreate, onUpdate, onDelete, onFileCreate }, unsubscribe: null }
+  try {
+    await ensureConnected()
+    activeSubscriptions.set(pageId, entry)
+    await runSubscription(pageId, entry)
+  } catch (e) {
+    console.error('Realtime: failed to subscribe to notes for page', pageId, e)
+    activeSubscriptions.delete(pageId)
+  }
+  return {
+    dispose() {
+      activeSubscriptions.delete(pageId)
+      entry.unsubscribe?.()
+    },
+  }
+}
+
+// Covers what the SDK's own bounded reconnect (see the realtime() config
+// above) doesn't: laptop sleep or mobile backgrounding routinely outlasts
+// even a generous retry budget, after which the SDK gives up for good and
+// does nothing further on its own. Re-issue every still-active page
+// subscription fresh once the browser reports connectivity again.
+window.addEventListener('online', async () => {
+  try {
+    if (await client.isConnected()) return
+    connectPromise = null
+    await ensureConnected()
+    for (const [pageId, entry] of activeSubscriptions) {
+      await runSubscription(pageId, entry)
+    }
+  } catch (e) {
+    console.error('Realtime: resubscribe after reconnect failed', e)
+  }
+})
 
 // ── Note files (attachments) ──────────────────────────────────────────────────
 

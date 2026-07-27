@@ -182,6 +182,87 @@ export const useNotesStore = defineStore('notes', () => {
     requestDrain()
   }
 
+  // ── Realtime (see services/api.js's subscribeToNotes) ──────────────────────
+  // All three handlers below write through to Dexie (db.notes/db.note_files)
+  // in addition to the Pinia array — allNotes is populated from the Dexie
+  // mirror (readNotes()) and the lastSyncedAt watcher above re-reads from it
+  // after every mutation-queue drain, so a handler that only touched
+  // allNotes would have its update silently dropped the next time that
+  // watcher fires. They only touch allNotes/visibleCount for the
+  // currently-open page — the subscription is already server-filtered to
+  // one page, but a fast page switch can still land a stale in-flight event
+  // just after currentPageId has moved on.
+
+  // create echoes are matched by id, not appended blindly: addNote()
+  // generates the note's id client-side before it's ever sent to the
+  // server, so a create event for a note *we* just posted arrives with the
+  // exact same id already in allNotes (the optimistic insert). Patching it
+  // in place (rather than no-op'ing) picks up server-assigned fields like
+  // the authoritative date_created, keeping ordering consistent with what
+  // other clients see. A genuinely new note (from someone else, or another
+  // tab) gets pushed and — same as addNote() — bumps visibleCount so it
+  // doesn't silently push a previously-visible older note out of the
+  // window.
+  async function applyRemoteCreate(items) {
+    for (const item of items) {
+      const { files, ...noteRow } = item
+      await db.notes.put(noteRow)
+      if (files?.length) await db.note_files.bulkPut(files)
+
+      if (noteRow.page_id !== currentPageId.value) continue
+      const idx = allNotes.value.findIndex((n) => n.id === noteRow.id)
+      if (idx !== -1) {
+        allNotes.value[idx] = { ...allNotes.value[idx], ...noteRow, files: files ?? allNotes.value[idx].files }
+      } else {
+        allNotes.value.push({ ...noteRow, files: files ?? [] })
+        visibleCount.value += 1
+      }
+    }
+  }
+
+  async function applyRemoteUpdate(items) {
+    for (const item of items) {
+      const { files, ...noteRow } = item
+      await db.notes.update(noteRow.id, noteRow)
+      if (files?.length) await db.note_files.bulkPut(files)
+
+      if (noteRow.page_id !== currentPageId.value) continue
+      const idx = allNotes.value.findIndex((n) => n.id === noteRow.id)
+      if (idx !== -1) {
+        allNotes.value[idx] = { ...allNotes.value[idx], ...noteRow, files: files ?? allNotes.value[idx].files }
+      }
+    }
+  }
+
+  // ids only (not full items) — Directus sends bare primary keys for delete
+  // subscription events. Soft-deletes in Dexie (deleted_at), matching
+  // removeNote()'s tombstone convention rather than a hard delete, so a
+  // stale queued mutation elsewhere can't resurrect the row.
+  async function applyRemoteDelete(ids) {
+    const deletedAt = new Date().toISOString()
+    for (const id of ids) {
+      await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+      await db.notes.update(id, { deleted_at: deletedAt })
+    }
+    allNotes.value = allNotes.value.filter((n) => !ids.includes(n.id))
+  }
+
+  // A note's own create event routinely arrives before its attachments do
+  // (separate queued mutations server-side — see subscribeToNotes's comment
+  // in services/api.js) — this fills them in as they land instead of
+  // leaving the note attachment-less until the viewer's next reload.
+  async function applyRemoteFileCreate(fileItems) {
+    for (const file of fileItems) {
+      await db.note_files.put(file)
+
+      const idx = allNotes.value.findIndex((n) => n.id === file.note_id)
+      if (idx === -1) continue // note not (yet) loaded on the currently-open page
+      const note = allNotes.value[idx]
+      if (note.files.some((f) => f.id === file.id)) continue // already picked up via the note's own create/update event
+      allNotes.value[idx] = { ...note, files: [...note.files, file].sort((a, b) => a.sort_order - b.sort_order) }
+    }
+  }
+
   // Used by search's jump-to-result flow. Purely a Dexie/API side effect —
   // doesn't touch allNotes/visibleCount/currentPageId, so it's safe to call
   // before deciding whether/how to navigate. Returns { found: true } if the
@@ -239,6 +320,10 @@ export const useNotesStore = defineStore('notes', () => {
     addNote,
     editNote,
     removeNote,
+    applyRemoteCreate,
+    applyRemoteUpdate,
+    applyRemoteDelete,
+    applyRemoteFileCreate,
     ensureNoteCached,
     widenToInclude,
     clearNotes,

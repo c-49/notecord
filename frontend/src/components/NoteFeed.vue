@@ -36,10 +36,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import { useNotesStore } from '@/stores/notesStore'
 import { useSearchStore } from '@/stores/searchStore'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
+import { subscribeToNotes } from '@/services/api'
 import { formatDayDivider } from '@/utils/dateUtils'
 import NoteBlock from '@/components/NoteBlock.vue'
 
@@ -54,13 +55,30 @@ const feedEl = ref(null)
 
 const groupedNotes = computed(() => notesStore.notesByDay())
 
+// One realtime subscription at a time, scoped to whichever page is
+// currently open — disposed before switching pages (and on unmount) so we
+// don't leak a subscription to a page we've navigated away from.
+let noteSubscription = null
+
 watch(() => props.pageId, async (id) => {
+  noteSubscription?.dispose()
+  noteSubscription = null
   await notesStore.loadNotes(id)
   await nextTick()
   // Suppressed during a search jump's cross-page navigation — the
   // jumpTargetNoteId watcher below handles scrolling in that case instead.
   if (!searchStore.suppressAutoScroll) scrollToBottom()
+  noteSubscription = await subscribeToNotes(id, {
+    onCreate: notesStore.applyRemoteCreate,
+    onUpdate: notesStore.applyRemoteUpdate,
+    onDelete: notesStore.applyRemoteDelete,
+    onFileCreate: notesStore.applyRemoteFileCreate,
+  })
 }, { immediate: true })
+
+onUnmounted(() => {
+  noteSubscription?.dispose()
+})
 
 // Performs the actual scroll for search's "jump to result" — fires once the
 // target page has loaded and the note's DOM node exists. A short retry loop
