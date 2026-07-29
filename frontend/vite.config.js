@@ -5,7 +5,16 @@ import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [
-    vue(),
+    vue({
+      template: {
+        compilerOptions: {
+          // emoji-picker-element registers a real custom element
+          // (<emoji-picker>) — without this, Vue's compiler treats the tag
+          // as an unresolved component and warns at runtime.
+          isCustomElement: (tag) => tag === 'emoji-picker',
+        },
+      },
+    }),
     VitePWA({
       registerType: 'autoUpdate',
       manifest: {

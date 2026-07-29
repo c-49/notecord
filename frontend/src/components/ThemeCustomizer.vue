@@ -13,6 +13,7 @@
 
         <div class="tab-bar">
           <button class="tab-btn" :class="{ active: activeTab === 'theme' }" @click="activeTab = 'theme'">Theme</button>
+          <button class="tab-btn" :class="{ active: activeTab === 'reactions' }" @click="activeTab = 'reactions'">Reactions</button>
           <button class="tab-btn" :class="{ active: activeTab === 'backups' }" @click="selectBackupsTab">Backups</button>
         </div>
 
@@ -43,7 +44,38 @@
           </div>
         </div>
 
-        <div v-else class="modal-body">
+        <div v-if="activeTab === 'reactions'" class="modal-body">
+          <p class="section-hint">
+            One-click quick reactions, shown atop the full emoji picker. Synced to your account, so they follow you to any device.
+          </p>
+          <div class="quick-reaction-chips">
+            <span v-for="e in quickReactionsStore.emojis" :key="e" class="quick-chip">
+              {{ e }}
+              <button class="chip-remove" :title="`Remove ${e}`" @click="removeQuick(e)">×</button>
+            </span>
+            <button
+              v-if="quickReactionsStore.emojis.length < MAX_QUICK_REACTIONS"
+              ref="addQuickBtnRef"
+              class="chip-add"
+              title="Add a quick reaction"
+              @click="openAddQuickPicker"
+            >
+              +
+            </button>
+          </div>
+          <button class="btn btn-ghost reset-quick-btn" @click="quickReactionsStore.resetToDefault()">
+            Reset to defaults
+          </button>
+
+          <EmojiPickerPopover
+            v-if="addQuickPickerOpen"
+            :anchor-rect="addQuickAnchorRect"
+            @select="onAddQuick"
+            @close="addQuickPickerOpen = false"
+          />
+        </div>
+
+        <div v-else-if="activeTab === 'backups'" class="modal-body">
           <!-- Every user: export just their own notes -->
           <div class="backup-row">
             <div class="backup-info">
@@ -92,8 +124,16 @@
 
         <div class="modal-actions">
           <button v-if="activeTab === 'theme'" class="btn btn-ghost" @click="themeStore.resetAll()">Reset all to default</button>
+          <span v-else-if="quickReactionsStore.emojis.length === 0" class="empty-hint">Add at least one quick reaction to continue</span>
           <span v-else />
-          <button class="btn btn-primary" @click="emit('close')">Done</button>
+          <button
+            class="btn btn-primary"
+            :disabled="quickReactionsStore.emojis.length === 0"
+            :title="quickReactionsStore.emojis.length === 0 ? 'Add at least one quick reaction first' : ''"
+            @click="emit('close')"
+          >
+            Done
+          </button>
         </div>
       </div>
     </div>
@@ -103,13 +143,34 @@
 <script setup>
 import { ref, computed, onUnmounted } from 'vue'
 import { useThemeStore, THEME_GROUPS } from '@/stores/themeStore'
+import { useQuickReactionsStore, MAX_QUICK_REACTIONS } from '@/stores/quickReactionsStore'
 import { getBackupStatus, downloadBackupFile, requestExport, getMyExportRequests } from '@/services/api'
 import { formatNoteTimestamp } from '@/utils/dateUtils'
+import EmojiPickerPopover from '@/components/EmojiPickerPopover.vue'
 
 const emit = defineEmits(['close'])
 const themeStore = useThemeStore()
+const quickReactionsStore = useQuickReactionsStore()
 
 const activeTab = ref('theme')
+
+const addQuickBtnRef = ref(null)
+const addQuickPickerOpen = ref(false)
+const addQuickAnchorRect = ref(null)
+
+function openAddQuickPicker() {
+  addQuickAnchorRect.value = addQuickBtnRef.value.getBoundingClientRect()
+  addQuickPickerOpen.value = true
+}
+
+function onAddQuick(emoji) {
+  addQuickPickerOpen.value = false
+  quickReactionsStore.addEmoji(emoji).catch((e) => console.error('Failed to add quick reaction:', e))
+}
+
+function removeQuick(emoji) {
+  quickReactionsStore.removeEmoji(emoji).catch((e) => console.error('Failed to remove quick reaction:', e))
+}
 
 // Non-admin users get a 403 here — that's expected, not an error to
 // surface; backupAccess just stays false and that section stays hidden.
@@ -315,6 +376,72 @@ onUnmounted(stopPolling)
   flex-shrink: 0;
 }
 
+.section-hint {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--sp-2) 0 var(--sp-3);
+}
+
+.quick-reaction-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding-bottom: var(--sp-3);
+}
+
+.quick-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.chip-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.chip-remove:hover {
+  color: var(--accent-danger);
+  background: rgba(218, 55, 60, 0.12);
+}
+
+.chip-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-lg);
+  border: 1.5px dashed var(--border-strong);
+  color: var(--text-muted);
+  font-size: 18px;
+  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast);
+}
+
+.chip-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.reset-quick-btn {
+  padding: var(--sp-1) var(--sp-3);
+}
+
 .theme-group {
   margin-bottom: var(--sp-4);
 }
@@ -408,5 +535,19 @@ onUnmounted(stopPolling)
   padding: var(--sp-3) var(--sp-4) var(--sp-4);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.empty-hint {
+  font-size: var(--text-xs);
+  color: var(--accent-danger);
+}
+
+.modal-actions .btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-actions .btn-primary:disabled:hover {
+  background: var(--accent);
 }
 </style>

@@ -5,6 +5,7 @@ import {
   createPage, updatePage, deletePage,
   createNote, updateNote, deleteNote,
   createNoteFile, deleteNoteFile,
+  createReaction, deleteReaction,
   uploadFile,
 } from './api'
 
@@ -14,7 +15,7 @@ export const pendingCount = ref(0)
 // resolves, which this module doesn't own the reactive UI state for).
 export const lastSyncedAt = ref(0)
 
-const COLLECTION_ORDER = ['sections', 'pages', 'notes', 'note_files']
+const COLLECTION_ORDER = ['sections', 'pages', 'notes', 'note_files', 'note_reactions']
 const BASE_BACKOFF_MS = 5000
 const MAX_BACKOFF_MS = 60000
 
@@ -36,6 +37,21 @@ async function refreshPendingCount() {
 // device) — safe to treat as stale and drop rather than a real failure.
 function isStaleRecordError(e) {
   return Array.isArray(e?.errors) && e.errors.some((err) => err?.extensions?.code === 'FORBIDDEN')
+}
+
+// note_reactions' unique index (note_id, user_id, emoji) rejects a genuine
+// duplicate with this code. In normal operation toggleReaction() never
+// attempts to create one (it checks for an existing "mine" row first), but
+// if local state and the server ever disagree about that (e.g. a stale
+// Dexie mirror from before some future fix, or another client's own
+// resurrection of the pattern this queue can't foresee), this is the same
+// "already effectively true, safe to drop rather than retry forever" shape
+// as isStaleRecordError above — a permanent conflict would otherwise retry
+// with exponential backoff forever, leaving a phantom reaction the user can
+// never remove (an actual bug hit once already — see notesStore.js's
+// applyRemoteReactionCreate comment for the id-expansion root cause).
+function isDuplicateReactionError(e) {
+  return Array.isArray(e?.errors) && e.errors.some((err) => err?.extensions?.code === 'RECORD_NOT_UNIQUE')
 }
 
 export async function queueMutation(type, collection, recordId, payload) {
@@ -62,6 +78,7 @@ const API = {
   pages: { create: createPage, update: updatePage, delete: deletePage },
   notes: { create: createNote, update: updateNote, delete: deleteNote },
   note_files: { create: createNoteFile, delete: deleteNoteFile },
+  note_reactions: { create: createReaction, delete: deleteReaction },
 }
 
 async function applyMutation(m) {
@@ -124,6 +141,16 @@ export async function drainQueue() {
         } catch (e) {
           if (isStaleRecordError(e)) {
             await db.pending_mutations.delete(m.localId)
+            await refreshPendingCount()
+            continue
+          }
+          if (m.collection === 'note_reactions' && m.type === 'create' && isDuplicateReactionError(e)) {
+            // This exact reaction already exists server-side under some
+            // other id — this optimistic row never will. Drop both the
+            // mutation and the orphaned local row; the lastSyncedAt watcher
+            // re-reading from Dexie below will remove it from the UI too.
+            await db.pending_mutations.delete(m.localId)
+            await db.note_reactions.delete(m.record_id)
             await refreshPendingCount()
             continue
           }

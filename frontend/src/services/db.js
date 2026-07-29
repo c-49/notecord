@@ -20,3 +20,13 @@ db.version(2).stores({
   note_files: 'id, note_id, sort_order',
   pending_mutations: '++localId, timestamp, collection, record_id',
 })
+
+// v3: adds note_reactions (same shape as note_files — indexed by note_id).
+db.version(3).stores({
+  sections: 'id, sort_order',
+  pages: 'id, section_id, sort_order',
+  notes: 'id, page_id, date_created',
+  note_files: 'id, note_id, sort_order',
+  pending_mutations: '++localId, timestamp, collection, record_id',
+  note_reactions: 'id, note_id',
+})

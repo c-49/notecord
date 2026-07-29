@@ -1,83 +1,66 @@
 <template>
   <div class="emoji-wrap">
     <div
-      v-if="!editing"
+      ref="swatchRef"
       class="emoji-display"
       role="button"
       tabindex="0"
-      aria-label="Set emoji"
-      @click="activate"
-      @keydown.enter.prevent="activate"
+      aria-label="Choose emoji"
+      @click="openPicker"
+      @keydown.enter.prevent="openPicker"
+      @keydown.space.prevent="openPicker"
     >
       <span v-if="modelValue" class="emoji-value">{{ modelValue }}</span>
       <span v-else class="emoji-empty">{{ defaultChar }}</span>
+      <button
+        v-if="modelValue"
+        class="emoji-clear"
+        title="Remove emoji"
+        @click.stop="clear"
+      >
+        ×
+      </button>
       <div class="emoji-tooltip">
-        <span class="tooltip-line">Click to set emoji</span>
-        <span class="tooltip-shortcut">
-          <kbd>Win</kbd><span>+</span><kbd>.</kbd>
-          &nbsp;·&nbsp;
-          <kbd>⌘</kbd><kbd>⌃</kbd><kbd>Space</kbd>
-        </span>
+        <span class="tooltip-line">Click to choose emoji</span>
       </div>
     </div>
 
-    <div v-else class="emoji-editing">
-      <input
-        ref="inputEl"
-        class="emoji-field"
-        :value="modelValue"
-        placeholder="😊"
-        @input="onInput"
-        @keydown.enter.prevent="deactivate"
-        @keydown.escape="cancel"
-        @blur="deactivate"
-      />
-      <span class="emoji-hint">Win+. or ⌘⌃Space</span>
-    </div>
+    <EmojiPickerPopover
+      v-if="pickerOpen"
+      :anchor-rect="anchorRect"
+      @select="onSelect"
+      @close="pickerOpen = false"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref } from 'vue'
+import EmojiPickerPopover from '@/components/EmojiPickerPopover.vue'
 
-const props = defineProps({
+defineProps({
   modelValue: { type: String, default: '' },
   defaultChar: { type: String, default: '✦' },
 })
 
 const emit = defineEmits(['update:modelValue'])
 
-const editing = ref(false)
-const inputEl = ref(null)
-let valueOnOpen = ''
+const swatchRef = ref(null)
+const pickerOpen = ref(false)
+const anchorRect = ref(null)
 
-function activate() {
-  valueOnOpen = props.modelValue
-  editing.value = true
-  nextTick(() => {
-    inputEl.value?.focus()
-    inputEl.value?.select()
-  })
+function openPicker() {
+  anchorRect.value = swatchRef.value.getBoundingClientRect()
+  pickerOpen.value = true
 }
 
-function onInput(e) {
-  const raw = e.target.value.trim()
-  if (!raw) { emit('update:modelValue', ''); return }
-  try {
-    const segs = [...new Intl.Segmenter().segment(raw)]
-    emit('update:modelValue', segs[0]?.segment ?? raw.slice(0, 4))
-  } catch {
-    emit('update:modelValue', raw.slice(0, 4))
-  }
+function onSelect(emoji) {
+  pickerOpen.value = false
+  emit('update:modelValue', emoji)
 }
 
-function deactivate() {
-  editing.value = false
-}
-
-function cancel() {
-  emit('update:modelValue', valueOnOpen)
-  editing.value = false
+function clear() {
+  emit('update:modelValue', '')
 }
 </script>
 
@@ -87,7 +70,6 @@ function cancel() {
   width: 44px;
 }
 
-/* ── Display mode ── */
 .emoji-display {
   position: relative;
   width: 44px;
@@ -125,6 +107,29 @@ function cancel() {
   opacity: 0.5;
 }
 
+.emoji-clear {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-strong);
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.emoji-clear:hover {
+  color: var(--accent-danger);
+  background: rgba(218, 55, 60, 0.12);
+}
+
 /* ── Tooltip ── */
 .emoji-tooltip {
   position: absolute;
@@ -160,59 +165,5 @@ function cancel() {
   font-size: 11px;
   color: var(--text-secondary);
   font-weight: 500;
-}
-
-.tooltip-shortcut {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-kbd {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-hover);
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  padding: 1px 4px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-
-/* ── Edit mode ── */
-.emoji-editing {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-.emoji-field {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--r-md);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  line-height: 1;
-  text-align: center;
-  cursor: text;
-  border: 1.5px solid var(--accent);
-  background: var(--bg-input);
-  color: var(--text-primary);
-  outline: none;
-  padding: 0;
-}
-
-.emoji-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
 }
 </style>

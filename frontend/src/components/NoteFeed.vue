@@ -73,6 +73,8 @@ watch(() => props.pageId, async (id) => {
     onUpdate: notesStore.applyRemoteUpdate,
     onDelete: notesStore.applyRemoteDelete,
     onFileCreate: notesStore.applyRemoteFileCreate,
+    onReactionCreate: notesStore.applyRemoteReactionCreate,
+    onReactionDelete: notesStore.applyRemoteReactionDelete,
   })
 }, { immediate: true })
 

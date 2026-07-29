@@ -273,6 +273,31 @@ async function main() {
     { icon: 'attach_file', sort_field: 'sort_order' }
   )
 
+  // ── note_reactions ───────────────────────────────────────────────────────────
+  // Discord-style emoji reactions: any number of (note_id, user_id, emoji)
+  // rows per note — grouped client-side by emoji into pills. A plain unique
+  // index (not the partial-index dance section_access needed) stops the same
+  // user double-reacting with the same emoji on the same note, since no
+  // column here is ever NULL.
+  console.log('Creating "note_reactions" collection…')
+  await createCollection(
+    'note_reactions',
+    [
+      primaryKey(),
+      { field: 'note_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'user_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      stringField('emoji', false),
+      dateField('date_created', 'date-created'),
+    ],
+    { icon: 'add_reaction' }
+  )
+  console.log('Ensuring note_reactions uniqueness index…')
+  runSql(`
+    CREATE UNIQUE INDEX IF NOT EXISTS note_reactions_unique
+      ON note_reactions (note_id, user_id, emoji);
+  `)
+  console.log('  ✓ note_reactions uniqueness index present')
+
   // ── section_access ───────────────────────────────────────────────────────────
   // A grant of viewer/editor access to a section (page_id: null) or a single
   // page within it (page_id: set), given by the section's owner to another
@@ -556,6 +581,95 @@ async function main() {
     },
   ])
 
+  // Reacting only requires being able to *see* the note (same bar as posting
+  // one), so this walks the identical owner/grant chain as notes:create's
+  // flow above, just with one extra hop prepended (note_id → page_id, since
+  // note_reactions references the note directly rather than the page).
+  await upsertFlow('Guard: note_reactions create requires note visibility (owner or shared access)', 'note_reactions', [
+    {
+      key: 'read_note',
+      body: {
+        name: 'Read Note',
+        type: 'item-read',
+        position_x: 19,
+        position_y: 1,
+        options: { collection: 'notes', key: '{{$trigger.payload.note_id}}', query: { fields: ['owner_id', 'page_id'] } },
+      },
+      resolveKey: 'is_note_owner',
+    },
+    {
+      key: 'is_note_owner',
+      body: {
+        name: 'Is note owner?',
+        type: 'condition',
+        position_x: 19,
+        position_y: 3,
+        options: { filter: { read_note: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null, // condition true → allow, stop here
+      rejectKey: 'read_page',
+    },
+    {
+      key: 'read_page',
+      body: {
+        name: 'Read Page',
+        type: 'item-read',
+        position_x: 39,
+        position_y: 5,
+        options: { collection: 'pages', key: '{{read_note.page_id}}', query: { fields: ['owner_id', 'section_id'] } },
+      },
+      resolveKey: 'is_page_owner',
+    },
+    {
+      key: 'is_page_owner',
+      body: {
+        name: 'Is page owner?',
+        type: 'condition',
+        position_x: 39,
+        position_y: 7,
+        options: { filter: { read_page: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null,
+      rejectKey: 'read_grant',
+    },
+    {
+      key: 'read_grant',
+      // Any role — viewers can react too, same as viewers being able to post.
+      // Direct page grant OR inherited whole-section grant, either suffices.
+      body: {
+        name: 'Read direct or whole-section grant',
+        type: 'item-read',
+        position_x: 59,
+        position_y: 9,
+        options: {
+          collection: 'section_access',
+          query: {
+            filter: {
+              _or: [
+                { page_id: { _eq: '{{read_note.page_id}}' }, user_id: { _eq: '{{$accountability.user}}' } },
+                { section_id: { _eq: '{{read_page.section_id}}' }, page_id: { _null: true }, user_id: { _eq: '{{$accountability.user}}' } },
+              ],
+            },
+            limit: 1,
+          },
+        },
+      },
+      resolveKey: 'check_grant',
+    },
+    {
+      key: 'check_grant',
+      body: {
+        name: 'Check grant found',
+        type: 'exec',
+        position_x: 79,
+        position_y: 7,
+        options: {
+          code: "module.exports = async function(data) {\n  if (Array.isArray(data.read_grant) && data.read_grant.length > 0) return true;\n  throw new Error('No access to react here.');\n};",
+        },
+      },
+    },
+  ])
+
   // ── backup_status ────────────────────────────────────────────────────────────
   // Written by backend/backup/backup-db.sh and export-notes.js after each
   // successful run; read by the frontend to show "Last backup: ..." in the
@@ -625,11 +739,19 @@ async function main() {
   // note_files relations — one_field:'files' registers the FK side of the O2M
   await createRelation('note_files', 'note_id', 'notes', 'CASCADE', { one_field: 'files' })
   await createRelation('note_files', 'file_id', 'directus_files', 'SET NULL')
+  // note_reactions relations — same one_field pattern, registers the O2M's FK side
+  await createRelation('note_reactions', 'note_id', 'notes', 'CASCADE', { one_field: 'reactions' })
+  await createRelation('note_reactions', 'user_id', 'directus_users', 'CASCADE')
 
   // Directus 11 requires an explicit directus_fields entry for the virtual O2M alias
   // on the "one" side, even when one_field is set on the relation.
   await createField('notes', {
     field: 'files',
+    type: 'alias',
+    meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
+  })
+  await createField('notes', {
+    field: 'reactions',
     type: 'alias',
     meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
   })
@@ -672,7 +794,7 @@ async function main() {
 
   const policiesResp = await req('GET', '/policies?filter[admin_access][_eq]=true&limit=10')
   const policies = policiesResp.data ?? policiesResp
-  const userCollections = ['sections', 'pages', 'notes', 'note_files']
+  const userCollections = ['sections', 'pages', 'notes', 'note_files', 'note_reactions']
   const actions = ['create', 'read', 'update', 'delete']
 
   for (const policy of policies) {
@@ -949,12 +1071,74 @@ async function main() {
     })
   }
 
+  // note_reactions: Discord-style — reacting only requires being able to see
+  // the note (create/read follow the exact same owner/grant chain as
+  // notes:read, one hop further via note_id), but removing a reaction is
+  // "your own reaction only", NOT "note owner can remove any reaction" —
+  // deliberately not the same rule as notes update/delete. No update
+  // permission at all; a reaction is only ever added or removed.
+  await upsertPermission(appPolicy.id, 'note_reactions', 'create', {
+    fields: ['id', 'note_id', 'emoji'],
+    presets: { user_id: '$CURRENT_USER' },
+    permissions: {
+      _or: [
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+        { note_id: { page_id: sharedGrant() } },
+        { note_id: { page_id: sharedViaWholeSection() } },
+      ],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'note_reactions', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+        { note_id: { page_id: sharedGrant() } },
+        { note_id: { page_id: sharedViaWholeSection() } },
+      ],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'note_reactions', 'delete', {
+    fields: '*',
+    permissions: { user_id: { _eq: '$CURRENT_USER' } },
+  })
+
+  // quick_reactions: each user's own editable set of one-click "quick react"
+  // emoji (shown atop the full picker in EmojiReactionPicker.vue, editable
+  // via Settings → Reactions) — stored server-side so it follows the user
+  // across devices, same as everything else in this app, rather than a
+  // per-browser localStorage preference. No default_value here (the schema
+  // API's JSON default handling for system-collection fields is fiddlier
+  // than it's worth) — the frontend falls back to a hardcoded default list
+  // whenever this is null/empty, same pattern as an unset theme override.
+  await createField('directus_users', {
+    field: 'quick_reactions',
+    type: 'json',
+    meta: { interface: 'input-code', options: { language: 'json' } },
+    schema: { is_nullable: true },
+  })
+
   // directus_users:read — needed so the share modal can search/select a
   // user to grant access to. Scoped to safe fields only: never expose the
   // password hash or other system fields, and no row-level filter (any app
-  // user can look another up by name/email to share with).
+  // user can look another up by name/email to share with). quick_reactions
+  // is harmless to expose the same way (just an emoji list, no secrecy
+  // concern) — also needed so readMe() (no explicit `fields`, so Directus
+  // returns whatever this permission allows) can see the caller's own value.
   await upsertPermission(appPolicy.id, 'directus_users', 'read', {
-    fields: ['id', 'first_name', 'last_name', 'email'],
+    fields: ['id', 'first_name', 'last_name', 'email', 'quick_reactions'],
+  })
+
+  // directus_users:update — self-only, and ONLY quick_reactions is
+  // writable. Deliberately excludes email/password/role/anything else —
+  // this is not a general "edit your profile" permission.
+  await upsertPermission(appPolicy.id, 'directus_users', 'update', {
+    fields: ['quick_reactions'],
+    permissions: { id: { _eq: '$CURRENT_USER' } },
   })
 
   // section_access: create/delete are owner-of-the-target-section-only (this

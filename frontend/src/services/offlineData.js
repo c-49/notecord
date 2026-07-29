@@ -15,29 +15,38 @@ export async function syncAll() {
   const [sections, pages] = await Promise.all([getSections(), getPages()])
   const perPageNotes = await Promise.all(pages.map((p) => getRecentNotes(p.id, NOTES_CACHE_LIMIT_PER_PAGE)))
   const notes = perPageNotes.flat()
-  const noteRows = notes.map(({ files, ...note }) => note)
+  const noteRows = notes.map(({ files, reactions, ...note }) => note)
   const fileRows = notes.flatMap((n) => n.files ?? [])
+  const reactionRows = notes.flatMap((n) => n.reactions ?? [])
 
-  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, async () => {
+  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, async () => {
     await Promise.all([db.sections.clear(), db.pages.clear()])
     await Promise.all([db.sections.bulkPut(sections), db.pages.bulkPut(pages)])
-    // Upsert only — notes/note_files are never cleared wholesale anymore,
-    // since older notes fetched on demand (loadMore() extending past the
-    // cache limit while online) must survive a resync. Trade-off: a note
-    // deleted by another device while this one was offline may not
-    // disappear from the cache until this device otherwise touches it —
-    // an accepted, rare edge case for a single-user app, same category as
-    // the roadmap's already-noted multi-device conflict tolerance.
+    // Upsert only — notes/note_files/note_reactions are never cleared
+    // wholesale anymore, since older notes fetched on demand (loadMore()
+    // extending past the cache limit while online) must survive a resync.
+    // Trade-off: a note (or reaction) deleted by another device while this
+    // one was offline may not disappear from the cache until this device
+    // otherwise touches it — an accepted, rare edge case for a single-user
+    // app, same category as the roadmap's already-noted multi-device
+    // conflict tolerance.
     await db.notes.bulkPut(noteRows)
     if (fileRows.length) await db.note_files.bulkPut(fileRows)
+    if (reactionRows.length) await db.note_reactions.bulkPut(reactionRows)
   })
 }
 
 // Wipes the local mirror — called on logout so cached notes aren't readable
 // via IndexedDB after the user signs out (e.g. on a shared device).
 export async function clearAll() {
-  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, async () => {
-    await Promise.all([db.sections.clear(), db.pages.clear(), db.notes.clear(), db.note_files.clear()])
+  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, async () => {
+    await Promise.all([
+      db.sections.clear(),
+      db.pages.clear(),
+      db.notes.clear(),
+      db.note_files.clear(),
+      db.note_reactions.clear(),
+    ])
   })
 }
 
@@ -57,9 +66,12 @@ export async function readNotes(pageId) {
     .filter((n) => !n.deleted_at)
   const ids = noteRows.map((n) => n.id)
   const fileRows = ids.length ? await db.note_files.where('note_id').anyOf(ids).toArray() : []
+  const reactionRows = ids.length ? await db.note_reactions.where('note_id').anyOf(ids).toArray() : []
   const filesByNote = groupBy(fileRows.filter((f) => !f.deleted_at), 'note_id')
+  const reactionsByNote = groupBy(reactionRows.filter((r) => !r.deleted_at), 'note_id')
   return noteRows.map((n) => ({
     ...n,
     files: (filesByNote[n.id] ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
+    reactions: reactionsByNote[n.id] ?? [],
   }))
 }

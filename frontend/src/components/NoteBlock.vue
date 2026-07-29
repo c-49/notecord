@@ -7,21 +7,32 @@
     @mouseleave="highlighted = false"
   >
     <!-- Hover action toolbar (always in the DOM so touch devices, which never
-         fire mouseenter, can still reach it — see @media (hover: none) below) -->
-    <div v-if="!editing && isOwnNote" class="note-actions" :class="{ visible: highlighted }">
-      <button class="action-btn" title="Edit" @click.stop="startEdit">
+         fire mouseenter, can still reach it — see @media (hover: none) below).
+         Reacting is open to any note you can see; edit/delete stay owner-only. -->
+    <div v-if="!editing" class="note-actions" :class="{ visible: highlighted }">
+      <button class="action-btn" title="Add reaction" @click.stop="openReactionPicker">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-          <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M8 14s1.5 2 4 2 4-2 4-2"/>
+          <line x1="9" y1="9" x2="9.01" y2="9"/>
+          <line x1="15" y1="9" x2="15.01" y2="9"/>
         </svg>
       </button>
-      <button class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <polyline points="3 6 5 6 21 6"/>
-          <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
-          <path d="M10 11v6M14 11v6M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
-        </svg>
-      </button>
+      <template v-if="isOwnNote">
+        <button class="action-btn" title="Edit" @click.stop="startEdit">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>
+        <button class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+            <path d="M10 11v6M14 11v6M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+          </svg>
+        </button>
+      </template>
     </div>
 
     <div class="note-meta">
@@ -68,6 +79,7 @@
             :note-file="noteFile"
           />
         </div>
+        <NoteReactions ref="reactionsRef" :note="note" />
       </template>
     </div>
 
@@ -95,6 +107,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { buildPinterestEmbeds, resolvePinterestEmbedHref } from '@/utils/pinterestWidget'
 import AttachmentRenderer from '@/components/attachments/AttachmentRenderer.vue'
 import RichTextEditor from '@/components/composer/RichTextEditor.vue'
+import NoteReactions from '@/components/NoteReactions.vue'
 
 const props = defineProps({
   note: { type: Object, required: true },
@@ -118,6 +131,11 @@ const editEditorRef = ref(null)
 const saving = ref(false)
 const showDeleteConfirm = ref(false)
 const deleting = ref(false)
+const reactionsRef = ref(null)
+
+function openReactionPicker(e) {
+  reactionsRef.value?.openPicker(e.currentTarget)
+}
 
 const imageFiles = computed(() => (props.note.files ?? []).filter((f) => f.attachment_type === 'image'))
 const otherFiles = computed(() => (props.note.files ?? []).filter((f) => f.attachment_type !== 'image'))

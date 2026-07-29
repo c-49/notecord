@@ -2,16 +2,18 @@ import { defineStore } from 'pinia'
 import { ref, computed, watch } from 'vue'
 import groupBy from 'lodash/groupBy'
 import { db } from '@/services/db'
-import { readNotes } from '@/services/offlineData'
+import { readNotes, NOTES_CACHE_LIMIT_PER_PAGE } from '@/services/offlineData'
 import { getOlderNotes, getNotesInRange } from '@/services/api'
 import { queueMutation, requestDrain, lastSyncedAt } from '@/services/mutationQueue'
 import { getDayKey } from '@/utils/dateUtils'
+import { useAuthStore } from '@/stores/authStore'
 
 const PAGE_SIZE = 30
 const REVEAL_FETCH_LIMIT = 500
 const MAX_REVEAL_ITERATIONS = 10
 
 export const useNotesStore = defineStore('notes', () => {
+  const authStore = useAuthStore()
   // Full, ascending-by-date_created list for the current page — cached
   // locally for offline access (capped to the most recent ~200, see
   // offlineData.js), extended further back on demand by loadMore() while
@@ -49,6 +51,13 @@ export const useNotesStore = defineStore('notes', () => {
       // pulled each page's recent notes on app boot, so this never needs
       // the network itself, online or offline.
       allNotes.value = await readNotes(pageId)
+      // The initial sync fetches up to NOTES_CACHE_LIMIT_PER_PAGE of the
+      // most recent notes — if fewer than that came back, the server never
+      // had more to give in the first place, so we already know the full
+      // history is cached locally without needing to probe loadMore().
+      if (allNotes.value.length < NOTES_CACHE_LIMIT_PER_PAGE) {
+        exhaustedServerHistory.value = true
+      }
     } finally {
       loading.value = false
     }
@@ -131,7 +140,7 @@ export const useNotesStore = defineStore('notes', () => {
       }
     })
 
-    allNotes.value.push({ ...localRow, files: fileRows })
+    allNotes.value.push({ ...localRow, files: fileRows, reactions: [] })
     // A new note is always the most recent — keep it inside the visible
     // window even if the page was scrolled back to view older notes.
     visibleCount.value += 1
@@ -177,8 +186,54 @@ export const useNotesStore = defineStore('notes', () => {
     allNotes.value = allNotes.value.filter((n) => n.id !== id)
     const deletedAt = new Date().toISOString()
     await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+    await db.note_reactions.where('note_id').equals(id).modify({ deleted_at: deletedAt })
     await db.notes.update(id, { deleted_at: deletedAt })
     await queueMutation('delete', 'notes', id, null)
+    requestDrain()
+  }
+
+  // Adds or removes the current user's own reaction of this emoji on this
+  // note — a single click toggles, same as Discord. Finds the caller's own
+  // (non-tombstoned) row for this exact note+emoji combo to decide which
+  // branch to take, since a user can only ever have one such row (enforced
+  // server-side by note_reactions' unique index).
+  async function toggleReaction(noteId, emoji) {
+    const idx = allNotes.value.findIndex((n) => n.id === noteId)
+    if (idx === -1) return
+    const note = allNotes.value[idx]
+    const mine = (note.reactions ?? []).find(
+      (r) => r.emoji === emoji && r.user_id?.id === authStore.user?.id && !r.deleted_at
+    )
+
+    if (mine) {
+      allNotes.value[idx] = { ...note, reactions: note.reactions.filter((r) => r.id !== mine.id) }
+      const deletedAt = new Date().toISOString()
+      await db.note_reactions.update(mine.id, { deleted_at: deletedAt })
+      await queueMutation('delete', 'note_reactions', mine.id, null)
+    } else {
+      const id = crypto.randomUUID()
+      // user_id is stored fully expanded (not just the bare id) to match the
+      // shape every reaction arrives in from the server (see api.js's
+      // reactions.user_id.* fields) — same convention note_files already
+      // uses for file_id (see mutationQueue.js's upload handler).
+      const row = {
+        id,
+        note_id: noteId,
+        user_id: {
+          id: authStore.user.id,
+          first_name: authStore.user.first_name,
+          last_name: authStore.user.last_name,
+          email: authStore.user.email,
+        },
+        emoji,
+        date_created: new Date().toISOString(),
+      }
+      allNotes.value[idx] = { ...note, reactions: [...(note.reactions ?? []), row] }
+      await db.note_reactions.put(row)
+      // Only id/note_id/emoji are ever sent to the server — user_id is
+      // stamped server-side via the create preset, not client-writable.
+      await queueMutation('create', 'note_reactions', id, { id, note_id: noteId, emoji })
+    }
     requestDrain()
   }
 
@@ -242,6 +297,7 @@ export const useNotesStore = defineStore('notes', () => {
     const deletedAt = new Date().toISOString()
     for (const id of ids) {
       await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+      await db.note_reactions.where('note_id').equals(id).modify({ deleted_at: deletedAt })
       await db.notes.update(id, { deleted_at: deletedAt })
     }
     allNotes.value = allNotes.value.filter((n) => !ids.includes(n.id))
@@ -261,6 +317,43 @@ export const useNotesStore = defineStore('notes', () => {
       if (note.files.some((f) => f.id === file.id)) continue // already picked up via the note's own create/update event
       allNotes.value[idx] = { ...note, files: [...note.files, file].sort((a, b) => a.sort_order - b.sort_order) }
     }
+  }
+
+  // Someone (possibly this same user, from another tab/device) added a
+  // reaction. Matched by id against the current reactions list so this
+  // client's own optimistic insert in toggleReaction() isn't duplicated when
+  // its own echo arrives back — and, importantly, so it isn't *downgraded*
+  // either: a realtime create event isn't guaranteed to carry the same
+  // nested user_id expansion (id/first_name/last_name/email) that a normal
+  // fetch or our own optimistic write already has (same class of gap as
+  // note_files' "arrives before files exist" case elsewhere in this file).
+  // If we already know this reaction, skip touching Dexie entirely rather
+  // than risk overwriting a complete row with a sparser one — the
+  // mutationQueue's lastSyncedAt watcher would otherwise pick up that
+  // sparser Dexie row on its next full re-read and clobber good state with it.
+  async function applyRemoteReactionCreate(items) {
+    for (const item of items) {
+      const idx = allNotes.value.findIndex((n) => n.id === item.note_id)
+      if (idx !== -1 && allNotes.value[idx].reactions?.some((r) => r.id === item.id)) continue
+
+      await db.note_reactions.put(item)
+      if (idx === -1) continue // note not (yet) loaded on the currently-open page
+      allNotes.value[idx] = { ...allNotes.value[idx], reactions: [...(allNotes.value[idx].reactions ?? []), item] }
+    }
+  }
+
+  // ids only, same shape as applyRemoteDelete above. Soft-deleted in Dexie
+  // for the same stale-mutation-resurrection reason as everything else here.
+  async function applyRemoteReactionDelete(ids) {
+    const deletedAt = new Date().toISOString()
+    for (const id of ids) {
+      await db.note_reactions.update(id, { deleted_at: deletedAt })
+    }
+    allNotes.value = allNotes.value.map((note) =>
+      note.reactions?.some((r) => ids.includes(r.id))
+        ? { ...note, reactions: note.reactions.filter((r) => !ids.includes(r.id)) }
+        : note
+    )
   }
 
   // Used by search's jump-to-result flow. Purely a Dexie/API side effect —
@@ -320,10 +413,13 @@ export const useNotesStore = defineStore('notes', () => {
     addNote,
     editNote,
     removeNote,
+    toggleReaction,
     applyRemoteCreate,
     applyRemoteUpdate,
     applyRemoteDelete,
     applyRemoteFileCreate,
+    applyRemoteReactionCreate,
+    applyRemoteReactionDelete,
     ensureNoteCached,
     widenToInclude,
     clearNotes,

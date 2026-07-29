@@ -89,6 +89,12 @@ watch(pageId, (id) => {
   background: var(--bg-hover);
 }
 
+@media (max-width: 768px) {
+  .page-header {
+    display: none;
+  }
+}
+
 .empty-state {
   flex: 1;
   display: flex;

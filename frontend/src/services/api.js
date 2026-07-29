@@ -6,6 +6,7 @@ import {
   readItems,
   readMe,
   readUsers,
+  updateMe,
   createItem,
   updateItem,
   deleteItem,
@@ -37,6 +38,12 @@ export async function refreshSession() {
 
 export async function getCurrentUser() {
   return client.request(readMe())
+}
+
+// Self-only — see directus_users:update in setup-schema.js, which restricts
+// the writable fields to just this one regardless of what's sent here.
+export async function updateMyQuickReactions(emojis) {
+  return client.request(updateMe({ quick_reactions: emojis }))
 }
 
 // ── Sections ──────────────────────────────────────────────────────────────────
@@ -86,7 +93,16 @@ export async function getRecentNotes(pageId, limit) {
     readItems('notes', {
       filter: { page_id: { _eq: pageId } },
       sort: ['-date_created'],
-      fields: ['*', 'files.*', 'files.file_id.*'],
+      fields: [
+        '*',
+        'files.*',
+        'files.file_id.*',
+        'reactions.*',
+        'reactions.user_id.id',
+        'reactions.user_id.first_name',
+        'reactions.user_id.last_name',
+        'reactions.user_id.email',
+      ],
       limit,
     })
   )
@@ -100,7 +116,16 @@ export async function getOlderNotes(pageId, beforeDate, limit) {
     readItems('notes', {
       filter: { page_id: { _eq: pageId }, date_created: { _lt: beforeDate } },
       sort: ['-date_created'],
-      fields: ['*', 'files.*', 'files.file_id.*'],
+      fields: [
+        '*',
+        'files.*',
+        'files.file_id.*',
+        'reactions.*',
+        'reactions.user_id.id',
+        'reactions.user_id.first_name',
+        'reactions.user_id.last_name',
+        'reactions.user_id.email',
+      ],
       limit,
     })
   )
@@ -169,7 +194,16 @@ export async function searchNotes({
     readItems('notes', {
       filter: clauses.length ? { _and: clauses } : {},
       sort: ['-date_created'],
-      fields: ['*', 'files.*', 'files.file_id.*'],
+      fields: [
+        '*',
+        'files.*',
+        'files.file_id.*',
+        'reactions.*',
+        'reactions.user_id.id',
+        'reactions.user_id.first_name',
+        'reactions.user_id.last_name',
+        'reactions.user_id.email',
+      ],
       limit,
       offset,
     })
@@ -185,7 +219,16 @@ export async function getNotesInRange(pageId, fromDate, toDate, limit = 500) {
     readItems('notes', {
       filter: { page_id: { _eq: pageId }, date_created: { _gte: fromDate, _lt: toDate } },
       sort: ['-date_created'],
-      fields: ['*', 'files.*', 'files.file_id.*'],
+      fields: [
+        '*',
+        'files.*',
+        'files.file_id.*',
+        'reactions.*',
+        'reactions.user_id.id',
+        'reactions.user_id.first_name',
+        'reactions.user_id.last_name',
+        'reactions.user_id.email',
+      ],
       limit,
     })
   )
@@ -203,6 +246,16 @@ export async function updateNote(id, data) {
 
 export async function deleteNote(id) {
   return client.request(deleteItem('notes', id))
+}
+
+// ── Reactions ─────────────────────────────────────────────────────────────────
+
+export async function createReaction(data) {
+  return client.request(createItem('note_reactions', data))
+}
+
+export async function deleteReaction(id) {
+  return client.request(deleteItem('note_reactions', id))
 }
 
 // ── Realtime ──────────────────────────────────────────────────────────────────
@@ -239,7 +292,7 @@ async function runSubscription(pageId, entry) {
   // section_id → section_access chain as note_files:read — see
   // setup-schema.js) fills the attachment in moments later instead of
   // leaving it missing until the viewer's next reload.
-  const [notes, files] = await Promise.all([
+  const [notes, files, reactions] = await Promise.all([
     client.subscribe('notes', {
       filter: { page_id: { _eq: pageId } },
       query: { fields: ['*', 'files.*', 'files.file_id.*'] },
@@ -249,10 +302,19 @@ async function runSubscription(pageId, entry) {
       filter: { note_id: { page_id: { _eq: pageId } } },
       query: { fields: ['*', 'file_id.*'] },
     }),
+    // Unlike note_files (create-only — nothing removes an attachment live
+    // today), reactions are added AND removed constantly, so both events
+    // matter here; there's no 'update' action on note_reactions at all (see
+    // setup-schema.js), so nothing to filter out on that front.
+    client.subscribe('note_reactions', {
+      filter: { note_id: { page_id: { _eq: pageId } } },
+      query: { fields: ['*', 'user_id.id', 'user_id.first_name', 'user_id.last_name', 'user_id.email'] },
+    }),
   ])
   entry.unsubscribe = () => {
     notes.unsubscribe()
     files.unsubscribe()
+    reactions.unsubscribe()
   }
   ;(async () => {
     try {
@@ -277,16 +339,33 @@ async function runSubscription(pageId, entry) {
       // Same as above.
     }
   })()
+  ;(async () => {
+    try {
+      for await (const msg of reactions.subscription) {
+        if (msg.event === 'create') entry.callbacks.onReactionCreate?.(msg.data)
+        // event === 'delete': data is bare ids, same shape as the notes case above.
+        else if (msg.event === 'delete') entry.callbacks.onReactionDelete?.(msg.data)
+      }
+    } catch {
+      // Same as above.
+    }
+  })()
 }
 
 // Subscribes to create/update/delete events for one page's notes (plus
-// attachment arrivals — see runSubscription's note_files comment above).
+// attachment and reaction arrivals — see runSubscription's comments above).
 // Returns a { dispose } handle — call it on unmount/page change to avoid
 // leaking subscriptions when switching channels. Never throws: a realtime
 // failure degrades to "no live updates" rather than breaking the page (REST
 // + the Dexie mirror still work regardless).
-export async function subscribeToNotes(pageId, { onCreate, onUpdate, onDelete, onFileCreate } = {}) {
-  const entry = { callbacks: { onCreate, onUpdate, onDelete, onFileCreate }, unsubscribe: null }
+export async function subscribeToNotes(
+  pageId,
+  { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete } = {}
+) {
+  const entry = {
+    callbacks: { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete },
+    unsubscribe: null,
+  }
   try {
     await ensureConnected()
     activeSubscriptions.set(pageId, entry)
