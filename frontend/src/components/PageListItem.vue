@@ -1,17 +1,32 @@
 <template>
+  <div class="page-list-item">
   <div
     class="page-row"
-    :class="{ 'is-active': isActive }"
+    :class="{ 'is-active': isActive, 'is-thread': isThread }"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
+    <!-- Thread collapse toggle — only rendered when this page actually has
+         threads; hidden (not just empty) otherwise so it doesn't eat click
+         space on every plain page row. -->
+    <button
+      v-if="hasThreads"
+      class="thread-toggle"
+      :aria-label="threadsCollapsed ? 'Show replies' : 'Hide replies'"
+      @click.stop="threadsCollapsed = !threadsCollapsed"
+    >
+      <svg class="chevron" :class="{ collapsed: threadsCollapsed }" width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
     <!-- Navigation link -->
     <RouterLink
       :to="`/page/${page.id}`"
       class="page-item"
       :class="{ active: isActive }"
     >
-      <span class="page-icon">{{ page.emoji ?? '#' }}</span>
+      <span class="page-icon">{{ isThread ? '🧵' : (page.emoji ?? '#') }}</span>
       <span class="page-name">{{ page.name }}</span>
       <span v-if="isShared" class="shared-badge" title="Shared with you">👥</span>
       <span v-else-if="hasGrants" class="shared-badge" title="You've shared this">🔗</span>
@@ -26,13 +41,13 @@
           <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
         </svg>
       </button>
-      <button v-if="canManage" class="action-btn" title="Rename" @click.stop="startRename">
+      <button v-if="canManage && !isThread" class="action-btn" title="Rename" @click.stop="startRename">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
           <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
         </svg>
       </button>
-      <button v-if="canManage" class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
+      <button v-if="isThread ? canDeleteThread : canManage" class="action-btn action-danger" title="Delete" @click.stop="showDeleteConfirm = true">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="3 6 5 6 21 6"/>
           <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
@@ -40,50 +55,63 @@
         </svg>
       </button>
     </div>
+  </div>
 
-    <!-- Modals -->
-    <Teleport to="body">
-      <!-- Rename -->
-      <div v-if="showRenameModal" class="modal-backdrop" @click.self="showRenameModal = false">
-        <div class="modal">
-          <h3>Rename Page</h3>
-          <div class="name-row">
-            <EmojiInput v-model="editEmoji" default-char="📄" />
-            <input
-              ref="renameModalInput"
-              v-model="editName"
-              class="name-input"
-              placeholder="Page name"
-              @keyup.enter="submitRenameModal"
-              @keyup.escape="showRenameModal = false"
-            />
-          </div>
-          <div class="modal-actions">
-            <button class="btn btn-ghost" @click="showRenameModal = false">Cancel</button>
-            <button class="btn btn-primary" :disabled="!editName.trim()" @click="submitRenameModal">Save</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Delete confirmation -->
-      <div v-if="showDeleteConfirm" class="modal-backdrop" @click.self="showDeleteConfirm = false">
-        <div class="modal">
-          <h3>Delete "{{ page.name }}"?</h3>
-          <p class="confirm-hint">All notes in this page will be permanently deleted.</p>
-          <div class="modal-actions">
-            <button class="btn btn-ghost" @click="showDeleteConfirm = false">Cancel</button>
-            <button class="btn btn-danger" :disabled="deleting" @click="confirmDelete">Delete</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
-
-    <ShareSectionModal
-      v-if="showShareModal"
-      :section="section"
-      :page="page"
-      @close="showShareModal = false"
+  <!-- Thread pages, nested/indented under this one — collapsed by default
+       (see hasThreads/threadsCollapsed below). Threads are only one level
+       deep, so this never recurses further (a thread page's own
+       navStore.pagesByParent lookup is always empty). -->
+  <nav v-if="hasThreads" v-show="!threadsCollapsed" class="thread-list">
+    <PageListItem
+      v-for="thread in navStore.pagesByParent[page.id] ?? []"
+      :key="thread.id"
+      :page="thread"
     />
+  </nav>
+
+  <!-- Modals -->
+  <Teleport to="body">
+    <!-- Rename -->
+    <div v-if="showRenameModal" class="modal-backdrop" @click.self="showRenameModal = false">
+      <div class="modal">
+        <h3>Rename Page</h3>
+        <div class="name-row">
+          <EmojiInput v-model="editEmoji" default-char="📄" />
+          <input
+            ref="renameModalInput"
+            v-model="editName"
+            class="name-input"
+            placeholder="Page name"
+            @keyup.enter="submitRenameModal"
+            @keyup.escape="showRenameModal = false"
+          />
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="showRenameModal = false">Cancel</button>
+          <button class="btn btn-primary" :disabled="!editName.trim()" @click="submitRenameModal">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete confirmation -->
+    <div v-if="showDeleteConfirm" class="modal-backdrop" @click.self="showDeleteConfirm = false">
+      <div class="modal">
+        <h3>Delete "{{ page.name }}"?</h3>
+        <p class="confirm-hint">{{ isThread ? 'All notes in this thread will be permanently deleted.' : 'All notes in this page will be permanently deleted.' }}</p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" @click="showDeleteConfirm = false">Cancel</button>
+          <button class="btn btn-danger" :disabled="deleting" @click="confirmDelete">Delete</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
+
+  <ShareSectionModal
+    v-if="showShareModal"
+    :section="section"
+    :page="page"
+    @close="showShareModal = false"
+  />
   </div>
 </template>
 
@@ -117,20 +145,39 @@ const renameModalInput = ref(null)
 const showDeleteConfirm = ref(false)
 const deleting = ref(false)
 const showShareModal = ref(false)
+// Threads render collapsed by default (see the thread prompt's sidebar
+// section) — a fresh ref per instance, so each page's threads collapse
+// independently and re-expanding one doesn't affect another.
+const threadsCollapsed = ref(true)
 
 const isActive = computed(() => route.params.pageId === String(props.page.id))
+const isThread = computed(() => !!props.page.parent_page_id)
+const hasThreads = computed(() => (navStore.pagesByParent[props.page.id]?.length ?? 0) > 0)
+
+// A thread page has no section of its own — access (and so, role) is
+// inherited from its parent_page_id instead (see setup-schema.js's
+// pages:read permission). sharingStore.roleFor only understands direct
+// ownerId/sectionId/pageId grants, not that inheritance, so for a thread
+// this resolves role against the PARENT page's own owner/section instead —
+// an approximation for UI purposes (show/hide rename/delete/share), not a
+// security boundary; the server enforces the real inheritance chain.
+const effectiveContext = computed(() => {
+  if (!isThread.value) return { ownerId: props.page.owner_id, sectionId: props.section?.id ?? null, pageId: props.page.id }
+  const parent = navStore.pages.find((p) => p.id === props.page.parent_page_id)
+  const parentSection = parent?.section_id ? navStore.sections.find((s) => s.id === parent.section_id) : null
+  return { ownerId: parent?.owner_id, sectionId: parentSection?.id ?? null, pageId: parent?.id }
+})
 
 // Rename/delete: page owner (regardless of section) OR an editor-role grant
 // covering this page — mirrors the pages:update/delete permission exactly.
-const pageRole = computed(() =>
-  sharingStore.roleFor({
-    ownerId: props.page.owner_id,
-    sectionId: props.section?.id ?? null,
-    pageId: props.page.id,
-  })
-)
+const pageRole = computed(() => sharingStore.roleFor(effectiveContext.value))
 const canManage = computed(() => pageRole.value === 'owner' || pageRole.value === 'editor')
-const isShared = computed(() => !!props.section && pageRole.value !== 'owner')
+// Deleting an entire thread (and every reply in it) is reserved for the
+// actual owner, deliberately narrower than canManage's owner-or-editor —
+// an editor collaborator can post/reply but shouldn't be able to nuke a
+// whole thread. Matches ThreadPanel.vue's own delete button.
+const canDeleteThread = computed(() => pageRole.value === 'owner')
+const isShared = computed(() => !isThread.value && !!props.section && pageRole.value !== 'owner')
 
 // Share is section-owner-only, always — even for a single-page grant (see
 // section_access:create's guard Flow) — so this checks the SECTION's
@@ -179,6 +226,28 @@ async function confirmDelete() {
   display: flex;
   align-items: center;
   margin: 1px var(--sp-2);
+}
+
+.thread-list {
+  margin-left: var(--sp-5);
+}
+
+.thread-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.thread-toggle .chevron {
+  transition: transform var(--t-base);
+}
+
+.thread-toggle .chevron.collapsed {
+  transform: rotate(-90deg);
 }
 
 .page-item {

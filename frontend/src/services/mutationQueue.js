@@ -6,6 +6,7 @@ import {
   createNote, updateNote, deleteNote,
   createNoteFile, deleteNoteFile,
   createReaction, deleteReaction,
+  createPin, deletePin,
   uploadFile,
 } from './api'
 
@@ -15,7 +16,7 @@ export const pendingCount = ref(0)
 // resolves, which this module doesn't own the reactive UI state for).
 export const lastSyncedAt = ref(0)
 
-const COLLECTION_ORDER = ['sections', 'pages', 'notes', 'note_files', 'note_reactions']
+const COLLECTION_ORDER = ['sections', 'pages', 'notes', 'note_files', 'note_reactions', 'note_pins']
 const BASE_BACKOFF_MS = 5000
 const MAX_BACKOFF_MS = 60000
 
@@ -79,6 +80,7 @@ const API = {
   notes: { create: createNote, update: updateNote, delete: deleteNote },
   note_files: { create: createNoteFile, delete: deleteNoteFile },
   note_reactions: { create: createReaction, delete: deleteReaction },
+  note_pins: { create: createPin, delete: deletePin },
 }
 
 async function applyMutation(m) {

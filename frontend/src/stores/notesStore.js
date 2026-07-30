@@ -7,13 +7,41 @@ import { getOlderNotes, getNotesInRange } from '@/services/api'
 import { queueMutation, requestDrain, lastSyncedAt } from '@/services/mutationQueue'
 import { getDayKey } from '@/utils/dateUtils'
 import { useAuthStore } from '@/stores/authStore'
+import { useNavStore } from '@/stores/navStore'
 
 const PAGE_SIZE = 30
 const REVEAL_FETCH_LIMIT = 500
 const MAX_REVEAL_ITERATIONS = 10
 
-export const useNotesStore = defineStore('notes', () => {
+// Injection key so ThreadPanel.vue's NoteFeed/NoteBlock/NoteComposer/
+// NoteReactions can share a SEPARATE notes-store instance from the main
+// PageView's — both can be mounted at once (main feed + thread panel), and
+// without this they'd fight over the same currentPageId/allNotes state.
+// PageView.vue/ThreadPanel.vue each create their own instance (via the
+// `instanceId` param below) and provide() it; components that consume it
+// inject() with a fallback to the default instance so standalone usage
+// (e.g. tests) still works.
+export const notesStoreKey = Symbol('notesStore')
+
+// `instanceId` creates a genuinely separate Pinia store (a distinct entry
+// in the store registry) rather than the app-wide singleton — Pinia keys
+// stores by id, so calling defineStore with a different id every time
+// yields independent state. Every existing call site uses no argument
+// (the default 'notes' id), so this is a no-op for them.
+export function useNotesStore(instanceId = 'notes') {
+  return defineStore(instanceId, () => {
   const authStore = useAuthStore()
+  const navStore = useNavStore()
+
+  // Keeps navStore.threadNoteCounts current for whichever page this
+  // instance has loaded — a no-op unless that page is actually a thread
+  // (see NoteBlock.vue's "🧵 N replies" affordance, which reads the count
+  // rather than just "does a thread page exist", since a freshly-created
+  // thread starts with zero notes).
+  function syncThreadNoteCount() {
+    const page = navStore.pages.find((p) => p.id === currentPageId.value)
+    if (page?.parent_page_id) navStore.setThreadNoteCount(page.id, allNotes.value.length)
+  }
   // Full, ascending-by-date_created list for the current page — cached
   // locally for offline access (capped to the most recent ~200, see
   // offlineData.js), extended further back on demand by loadMore() while
@@ -171,6 +199,7 @@ export const useNotesStore = defineStore('notes', () => {
     }
 
     requestDrain()
+    syncThreadNoteCount()
     return pushedNote
   }
 
@@ -187,9 +216,40 @@ export const useNotesStore = defineStore('notes', () => {
     const deletedAt = new Date().toISOString()
     await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
     await db.note_reactions.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+    await db.note_pins.where('note_id').equals(id).modify({ deleted_at: deletedAt })
     await db.notes.update(id, { deleted_at: deletedAt })
+    // DB CASCADEs pages.origin_note_id too (deleting a note takes its own
+    // thread page — and that thread's notes in turn — with it, see
+    // setup-schema.js) — mirror that locally the same way navStore's
+    // removePage() mirrors a direct page-delete's cascade.
+    const threadIds = navStore.pages.filter((p) => p.origin_note_id === id).map((p) => p.id)
+    if (threadIds.length) {
+      navStore.pages = navStore.pages.filter((p) => !threadIds.includes(p.id))
+      const threadNoteIds = await db.notes.where('page_id').anyOf(threadIds).primaryKeys()
+      if (threadNoteIds.length) {
+        await db.note_files.where('note_id').anyOf(threadNoteIds).modify({ deleted_at: deletedAt })
+        await db.note_reactions.where('note_id').anyOf(threadNoteIds).modify({ deleted_at: deletedAt })
+        await db.note_pins.where('note_id').anyOf(threadNoteIds).modify({ deleted_at: deletedAt })
+        await db.notes.where('page_id').anyOf(threadIds).modify({ deleted_at: deletedAt })
+      }
+      await db.pages.where('id').anyOf(threadIds).modify({ deleted_at: deletedAt })
+    }
     await queueMutation('delete', 'notes', id, null)
     requestDrain()
+    syncThreadNoteCount()
+
+    // An empty thread is pointless (nothing left to reply to) — auto-delete
+    // it once its last note is gone. Only ever applies to thread pages
+    // (parent_page_id set); a normal page emptied of its notes is left
+    // exactly as-is, deliberately not generalized to "any page with 0
+    // notes". This only fires as a consequence of an explicit note
+    // deletion — never on thread creation itself (which starts with zero
+    // notes before the user posts a first reply) or merely opening/closing
+    // the panel, since removeNote is never called in either of those paths.
+    const currentPage = navStore.pages.find((p) => p.id === currentPageId.value)
+    if (currentPage?.parent_page_id && allNotes.value.length === 0) {
+      await navStore.removePage(currentPage.id)
+    }
   }
 
   // Adds or removes the current user's own reaction of this emoji on this
@@ -237,6 +297,41 @@ export const useNotesStore = defineStore('notes', () => {
     requestDrain()
   }
 
+  // Toggles whether a note is pinned — unlike reactions (many per note, one
+  // per user+emoji), a pin is a single shared existence flag (see
+  // setup-schema.js's note_pins collection comment): if ANY active pin row
+  // exists, this note counts as pinned to every viewer, and toggling
+  // removes THAT row regardless of who created it. Whether the removal
+  // actually succeeds is up to the server's hybrid delete permission
+  // (pinning user, or the note/page/section owner — see setup-schema.js) —
+  // a collaborator who isn't allowed will have the request rejected
+  // server-side (and, per mutationQueue.js's existing 403-is-stale
+  // assumption, silently dropped from the local queue on drain; an
+  // accepted rare-edge-case, same category as this app's other
+  // multi-device tolerances).
+  async function togglePin(noteId) {
+    const idx = allNotes.value.findIndex((n) => n.id === noteId)
+    if (idx === -1) return
+    const note = allNotes.value[idx]
+    const existing = (note.pins ?? []).find((p) => !p.deleted_at)
+
+    if (existing) {
+      allNotes.value[idx] = { ...note, pins: note.pins.filter((p) => p.id !== existing.id) }
+      const deletedAt = new Date().toISOString()
+      await db.note_pins.update(existing.id, { deleted_at: deletedAt })
+      await queueMutation('delete', 'note_pins', existing.id, null)
+    } else {
+      const id = crypto.randomUUID()
+      const row = { id, note_id: noteId, pinned_by: authStore.user?.id, pinned_at: new Date().toISOString() }
+      allNotes.value[idx] = { ...note, pins: [...(note.pins ?? []), row] }
+      await db.note_pins.put(row)
+      // Only id/note_id are ever sent to the server — pinned_by is stamped
+      // server-side via the create preset, not client-writable.
+      await queueMutation('create', 'note_pins', id, { id, note_id: noteId })
+    }
+    requestDrain()
+  }
+
   // ── Realtime (see services/api.js's subscribeToNotes) ──────────────────────
   // All three handlers below write through to Dexie (db.notes/db.note_files)
   // in addition to the Pinia array — allNotes is populated from the Dexie
@@ -273,6 +368,7 @@ export const useNotesStore = defineStore('notes', () => {
         visibleCount.value += 1
       }
     }
+    syncThreadNoteCount()
   }
 
   async function applyRemoteUpdate(items) {
@@ -298,9 +394,11 @@ export const useNotesStore = defineStore('notes', () => {
     for (const id of ids) {
       await db.note_files.where('note_id').equals(id).modify({ deleted_at: deletedAt })
       await db.note_reactions.where('note_id').equals(id).modify({ deleted_at: deletedAt })
+      await db.note_pins.where('note_id').equals(id).modify({ deleted_at: deletedAt })
       await db.notes.update(id, { deleted_at: deletedAt })
     }
     allNotes.value = allNotes.value.filter((n) => !ids.includes(n.id))
+    syncThreadNoteCount()
   }
 
   // A note's own create event routinely arrives before its attachments do
@@ -352,6 +450,33 @@ export const useNotesStore = defineStore('notes', () => {
     allNotes.value = allNotes.value.map((note) =>
       note.reactions?.some((r) => ids.includes(r.id))
         ? { ...note, reactions: note.reactions.filter((r) => !ids.includes(r.id)) }
+        : note
+    )
+  }
+
+  // Same shape as applyRemoteReactionCreate above — matched by id so this
+  // client's own optimistic insert in togglePin() isn't duplicated when its
+  // own echo arrives back.
+  async function applyRemotePinCreate(items) {
+    for (const item of items) {
+      const idx = allNotes.value.findIndex((n) => n.id === item.note_id)
+      if (idx !== -1 && allNotes.value[idx].pins?.some((p) => p.id === item.id)) continue
+
+      await db.note_pins.put(item)
+      if (idx === -1) continue
+      allNotes.value[idx] = { ...allNotes.value[idx], pins: [...(allNotes.value[idx].pins ?? []), item] }
+    }
+  }
+
+  // ids only, same shape as applyRemoteReactionDelete above.
+  async function applyRemotePinDelete(ids) {
+    const deletedAt = new Date().toISOString()
+    for (const id of ids) {
+      await db.note_pins.update(id, { deleted_at: deletedAt })
+    }
+    allNotes.value = allNotes.value.map((note) =>
+      note.pins?.some((p) => ids.includes(p.id))
+        ? { ...note, pins: note.pins.filter((p) => !ids.includes(p.id)) }
         : note
     )
   }
@@ -414,14 +539,18 @@ export const useNotesStore = defineStore('notes', () => {
     editNote,
     removeNote,
     toggleReaction,
+    togglePin,
     applyRemoteCreate,
     applyRemoteUpdate,
     applyRemoteDelete,
     applyRemoteFileCreate,
     applyRemoteReactionCreate,
     applyRemoteReactionDelete,
+    applyRemotePinCreate,
+    applyRemotePinDelete,
     ensureNoteCached,
     widenToInclude,
     clearNotes,
   }
-})
+  })()
+}

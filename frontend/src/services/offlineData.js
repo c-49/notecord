@@ -15,37 +15,40 @@ export async function syncAll() {
   const [sections, pages] = await Promise.all([getSections(), getPages()])
   const perPageNotes = await Promise.all(pages.map((p) => getRecentNotes(p.id, NOTES_CACHE_LIMIT_PER_PAGE)))
   const notes = perPageNotes.flat()
-  const noteRows = notes.map(({ files, reactions, ...note }) => note)
+  const noteRows = notes.map(({ files, reactions, pins, ...note }) => note)
   const fileRows = notes.flatMap((n) => n.files ?? [])
   const reactionRows = notes.flatMap((n) => n.reactions ?? [])
+  const pinRows = notes.flatMap((n) => n.pins ?? [])
 
-  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, async () => {
+  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, db.note_pins, async () => {
     await Promise.all([db.sections.clear(), db.pages.clear()])
     await Promise.all([db.sections.bulkPut(sections), db.pages.bulkPut(pages)])
-    // Upsert only — notes/note_files/note_reactions are never cleared
-    // wholesale anymore, since older notes fetched on demand (loadMore()
-    // extending past the cache limit while online) must survive a resync.
-    // Trade-off: a note (or reaction) deleted by another device while this
-    // one was offline may not disappear from the cache until this device
-    // otherwise touches it — an accepted, rare edge case for a single-user
-    // app, same category as the roadmap's already-noted multi-device
-    // conflict tolerance.
+    // Upsert only — notes/note_files/note_reactions/note_pins are never
+    // cleared wholesale anymore, since older notes fetched on demand
+    // (loadMore() extending past the cache limit while online) must survive
+    // a resync. Trade-off: a note (or reaction/pin) deleted by another
+    // device while this one was offline may not disappear from the cache
+    // until this device otherwise touches it — an accepted, rare edge case
+    // for a single-user app, same category as the roadmap's already-noted
+    // multi-device conflict tolerance.
     await db.notes.bulkPut(noteRows)
     if (fileRows.length) await db.note_files.bulkPut(fileRows)
     if (reactionRows.length) await db.note_reactions.bulkPut(reactionRows)
+    if (pinRows.length) await db.note_pins.bulkPut(pinRows)
   })
 }
 
 // Wipes the local mirror — called on logout so cached notes aren't readable
 // via IndexedDB after the user signs out (e.g. on a shared device).
 export async function clearAll() {
-  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, async () => {
+  await db.transaction('rw', db.sections, db.pages, db.notes, db.note_files, db.note_reactions, db.note_pins, async () => {
     await Promise.all([
       db.sections.clear(),
       db.pages.clear(),
       db.notes.clear(),
       db.note_files.clear(),
       db.note_reactions.clear(),
+      db.note_pins.clear(),
     ])
   })
 }
@@ -61,17 +64,40 @@ export async function readNav() {
   return [sections.filter((s) => !s.deleted_at), pages.filter((p) => !p.deleted_at)]
 }
 
+// Actual reply counts for a set of thread pages — used by navStore.js's
+// threadNoteCounts (NoteBlock.vue's "🧵 N replies" affordance needs to
+// reflect notes actually posted in the thread, not just whether the thread
+// page itself exists — a freshly-created, still-empty thread shouldn't
+// show "1 reply"). Every thread page's notes are already synced into
+// db.notes the same as any other page's (syncAll() fetches recent notes
+// for every page, threads included), so this is a plain local read, not a
+// network call.
+export async function getThreadNoteCounts(threadPageIds) {
+  const counts = {}
+  for (const id of threadPageIds) counts[id] = 0
+  if (!threadPageIds.length) return counts
+  const noteRows = await db.notes.where('page_id').anyOf(threadPageIds).toArray()
+  for (const n of noteRows) {
+    if (n.deleted_at) continue
+    counts[n.page_id] = (counts[n.page_id] ?? 0) + 1
+  }
+  return counts
+}
+
 export async function readNotes(pageId) {
   const noteRows = (await db.notes.where('page_id').equals(pageId).sortBy('date_created'))
     .filter((n) => !n.deleted_at)
   const ids = noteRows.map((n) => n.id)
   const fileRows = ids.length ? await db.note_files.where('note_id').anyOf(ids).toArray() : []
   const reactionRows = ids.length ? await db.note_reactions.where('note_id').anyOf(ids).toArray() : []
+  const pinRows = ids.length ? await db.note_pins.where('note_id').anyOf(ids).toArray() : []
   const filesByNote = groupBy(fileRows.filter((f) => !f.deleted_at), 'note_id')
   const reactionsByNote = groupBy(reactionRows.filter((r) => !r.deleted_at), 'note_id')
+  const pinsByNote = groupBy(pinRows.filter((p) => !p.deleted_at), 'note_id')
   return noteRows.map((n) => ({
     ...n,
     files: (filesByNote[n.id] ?? []).slice().sort((a, b) => a.sort_order - b.sort_order),
     reactions: reactionsByNote[n.id] ?? [],
+    pins: pinsByNote[n.id] ?? [],
   }))
 }

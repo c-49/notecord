@@ -102,6 +102,7 @@ export async function getRecentNotes(pageId, limit) {
         'reactions.user_id.first_name',
         'reactions.user_id.last_name',
         'reactions.user_id.email',
+        'pins.*',
       ],
       limit,
     })
@@ -125,6 +126,7 @@ export async function getOlderNotes(pageId, beforeDate, limit) {
         'reactions.user_id.first_name',
         'reactions.user_id.last_name',
         'reactions.user_id.email',
+        'pins.*',
       ],
       limit,
     })
@@ -203,6 +205,7 @@ export async function searchNotes({
         'reactions.user_id.first_name',
         'reactions.user_id.last_name',
         'reactions.user_id.email',
+        'pins.*',
       ],
       limit,
       offset,
@@ -228,6 +231,7 @@ export async function getNotesInRange(pageId, fromDate, toDate, limit = 500) {
         'reactions.user_id.first_name',
         'reactions.user_id.last_name',
         'reactions.user_id.email',
+        'pins.*',
       ],
       limit,
     })
@@ -256,6 +260,47 @@ export async function createReaction(data) {
 
 export async function deleteReaction(id) {
   return client.request(deleteItem('note_reactions', id))
+}
+
+// ── Pins ──────────────────────────────────────────────────────────────────────
+
+export async function createPin(data) {
+  return client.request(createItem('note_pins', data))
+}
+
+export async function deletePin(id) {
+  return client.request(deleteItem('note_pins', id))
+}
+
+// PinnedPanel.vue's list — unlike reactions/pins on individual notes
+// (mirrored into Dexie, bounded to whatever's already cached), a page's
+// full set of pinned notes can include notes far outside the ~200-note
+// cache window, so this always hits the server directly (online-only,
+// same "full search is online-only" pattern search already established)
+// rather than trying to derive it from the local mirror.
+//
+// Also pulls in pins on notes INSIDE any of this page's threads — a thread
+// has no Pinned button of its own (see the thread prompt's follow-up:
+// otherwise a note pinned inside a thread was pinned into the void, nowhere
+// showed it). note_id.page_id stays a bare id (not further expanded) —
+// PinnedPanel.vue resolves whether that id is a thread, and which one, via
+// navStore.pages/pagesByParent, already fully loaded client-side, rather
+// than asking the server to expand it here too.
+export async function getPagePins(pageId) {
+  return client.request(
+    readItems('note_pins', {
+      filter: {
+        note_id: {
+          page_id: {
+            _or: [{ id: { _eq: pageId } }, { parent_page_id: { _eq: pageId } }],
+          },
+        },
+      },
+      sort: ['-pinned_at'],
+      fields: ['*', 'note_id.id', 'note_id.content', 'note_id.date_created', 'note_id.page_id'],
+      limit: -1,
+    })
+  )
 }
 
 // ── Realtime ──────────────────────────────────────────────────────────────────
@@ -292,7 +337,7 @@ async function runSubscription(pageId, entry) {
   // section_id → section_access chain as note_files:read — see
   // setup-schema.js) fills the attachment in moments later instead of
   // leaving it missing until the viewer's next reload.
-  const [notes, files, reactions] = await Promise.all([
+  const [notes, files, reactions, pins] = await Promise.all([
     client.subscribe('notes', {
       filter: { page_id: { _eq: pageId } },
       query: { fields: ['*', 'files.*', 'files.file_id.*'] },
@@ -310,11 +355,18 @@ async function runSubscription(pageId, entry) {
       filter: { note_id: { page_id: { _eq: pageId } } },
       query: { fields: ['*', 'user_id.id', 'user_id.first_name', 'user_id.last_name', 'user_id.email'] },
     }),
+    // Same create+delete shape as note_reactions above — no 'update' action
+    // on note_pins either (see setup-schema.js), a pin is only ever added or removed.
+    client.subscribe('note_pins', {
+      filter: { note_id: { page_id: { _eq: pageId } } },
+      query: { fields: ['*'] },
+    }),
   ])
   entry.unsubscribe = () => {
     notes.unsubscribe()
     files.unsubscribe()
     reactions.unsubscribe()
+    pins.unsubscribe()
   }
   ;(async () => {
     try {
@@ -350,6 +402,16 @@ async function runSubscription(pageId, entry) {
       // Same as above.
     }
   })()
+  ;(async () => {
+    try {
+      for await (const msg of pins.subscription) {
+        if (msg.event === 'create') entry.callbacks.onPinCreate?.(msg.data)
+        else if (msg.event === 'delete') entry.callbacks.onPinDelete?.(msg.data)
+      }
+    } catch {
+      // Same as above.
+    }
+  })()
 }
 
 // Subscribes to create/update/delete events for one page's notes (plus
@@ -360,10 +422,10 @@ async function runSubscription(pageId, entry) {
 // + the Dexie mirror still work regardless).
 export async function subscribeToNotes(
   pageId,
-  { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete } = {}
+  { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete, onPinCreate, onPinDelete } = {}
 ) {
   const entry = {
-    callbacks: { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete },
+    callbacks: { onCreate, onUpdate, onDelete, onFileCreate, onReactionCreate, onReactionDelete, onPinCreate, onPinDelete },
     unsubscribe: null,
   }
   try {

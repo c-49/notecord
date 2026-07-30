@@ -64,7 +64,7 @@
       <p v-if="searchStore.offlineRestricted" class="offline-banner">
         Offline — searching cached notes only (most recent ~200 per page).
       </p>
-      <p v-if="searchStore.jumpError" class="jump-error-banner">{{ searchStore.jumpError }}</p>
+      <p v-if="jumpStore.jumpError" class="jump-error-banner">{{ jumpStore.jumpError }}</p>
 
       <div class="view-toggle">
         <button
@@ -118,12 +118,14 @@ import { useRouter } from 'vue-router'
 import debounce from 'lodash/debounce'
 import { useSearchStore } from '@/stores/searchStore'
 import { useNavStore } from '@/stores/navStore'
+import { useJumpStore } from '@/stores/jumpStore'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import SearchResultItem from './SearchResultItem.vue'
 import SearchAttachmentsView from './SearchAttachmentsView.vue'
 
 const searchStore = useSearchStore()
 const navStore = useNavStore()
+const jumpStore = useJumpStore()
 const router = useRouter()
 const { isOnline } = useOnlineStatus()
 

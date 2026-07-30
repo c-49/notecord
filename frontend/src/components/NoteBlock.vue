@@ -5,6 +5,10 @@
     :class="{ highlighted }"
     @mouseenter="highlighted = true"
     @mouseleave="highlighted = false"
+    @contextmenu.prevent="openContextMenu"
+    @touchstart.passive="onTouchStart"
+    @touchend="onTouchEnd"
+    @touchmove="onTouchMove"
   >
     <!-- Hover action toolbar (always in the DOM so touch devices, which never
          fire mouseenter, can still reach it — see @media (hover: none) below).
@@ -36,6 +40,7 @@
     </div>
 
     <div class="note-meta">
+      <span v-if="isPinned" class="pin-indicator" title="Pinned">📌</span>
       <span class="note-timestamp">{{ formatNoteTimestamp(note.date_created) }}</span>
     </div>
 
@@ -80,6 +85,9 @@
           />
         </div>
         <NoteReactions ref="reactionsRef" :note="note" />
+        <button v-if="threadCount" class="thread-affordance" @click="openThread">
+          🧵 {{ threadCount }} {{ threadCount === 1 ? 'reply' : 'replies' }}
+        </button>
       </template>
     </div>
 
@@ -96,25 +104,101 @@
         </div>
       </div>
     </Teleport>
+
+    <NoteContextMenu
+      v-if="contextMenuOpen"
+      :anchor-rect="contextMenuAnchorRect"
+      :quick-emojis="quickReactionsStore.emojis"
+      :pinned="isPinned"
+      :can-create-thread="canCreateThread"
+      @react="(emoji) => reactionsRef?.toggle(emoji)"
+      @expand="expandReactionPicker"
+      @create-thread="handleCreateThread"
+      @toggle-pin="() => notesStore.togglePin(note.id)"
+      @delete="showDeleteConfirm = true"
+      @close="contextMenuOpen = false"
+    />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, nextTick, watch } from 'vue'
+import { ref, computed, nextTick, watch, inject } from 'vue'
 import { formatNoteTimestamp } from '@/utils/dateUtils'
-import { useNotesStore } from '@/stores/notesStore'
+import { useNotesStore, notesStoreKey } from '@/stores/notesStore'
 import { useAuthStore } from '@/stores/authStore'
+import { useNavStore } from '@/stores/navStore'
+import { useThreadPanelStore } from '@/stores/threadPanelStore'
+import { useSearchStore } from '@/stores/searchStore'
+import { usePinnedStore } from '@/stores/pinnedStore'
+import { useQuickReactionsStore } from '@/stores/quickReactionsStore'
 import { buildPinterestEmbeds, resolvePinterestEmbedHref } from '@/utils/pinterestWidget'
 import AttachmentRenderer from '@/components/attachments/AttachmentRenderer.vue'
 import RichTextEditor from '@/components/composer/RichTextEditor.vue'
 import NoteReactions from '@/components/NoteReactions.vue'
+import NoteContextMenu from '@/components/NoteContextMenu.vue'
 
 const props = defineProps({
   note: { type: Object, required: true },
 })
 
-const notesStore = useNotesStore()
+const notesStore = inject(notesStoreKey, useNotesStore())
 const authStore = useAuthStore()
+const navStore = useNavStore()
+const threadPanelStore = useThreadPanelStore()
+const searchStore = useSearchStore()
+const pinnedStore = usePinnedStore()
+const quickReactionsStore = useQuickReactionsStore()
+
+// "🧵 N replies" — the note's actual reply COUNT (navStore.threadNoteCounts,
+// kept in sync by notesStore.js), not just "does a thread page exist".
+// threadsByOriginNote alone would show "1 reply" the instant a thread is
+// created, before anyone's actually replied — a freshly-created thread
+// starts at 0 notes and stays hidden until its first one lands.
+const originThread = computed(() => {
+  const threads = navStore.threadsByOriginNote[props.note.id]
+  if (!threads?.length) return null
+  // Only one thread per note in practice, but if more than one somehow
+  // exists, use the earliest (oldest reply chain).
+  return [...threads].sort((a, b) => a.sort_order - b.sort_order)[0]
+})
+const threadCount = computed(() => {
+  const thread = originThread.value
+  if (!thread) return 0
+  return navStore.threadNoteCounts[thread.id] ?? 0
+})
+
+function openThread() {
+  const thread = originThread.value
+  if (!thread) return
+  searchStore.closeSearch()
+  pinnedStore.closePanel()
+  threadPanelStore.open(thread.id)
+}
+
+// Hidden once THIS page is itself a thread (threads are one level deep
+// only, enforced client-side here — matching how the app treats similar
+// guardrails — and again server-side in the thread-create guard flow).
+const canCreateThread = computed(() => {
+  const currentPage = navStore.pages.find((p) => p.id === notesStore.currentPageId)
+  return !currentPage?.parent_page_id
+})
+
+// Derives a short plain-text sidebar label from the origin note's content
+// (there's no naming step in the "Create Thread" UX — it's a single
+// context-menu click, not a modal) — falls back to navStore.addThread's own
+// 'Thread' default for a note with no text (attachment/embed-only).
+function threadNameFromNote(note) {
+  const text = (note.content ?? '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!text) return undefined
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text
+}
+
+async function handleCreateThread() {
+  const thread = await navStore.addThread(notesStore.currentPageId, props.note.id, threadNameFromNote(props.note))
+  searchStore.closeSearch()
+  pinnedStore.closePanel()
+  threadPanelStore.open(thread.id)
+}
 
 // Discord-style ownership: only the note's own author can edit/delete it,
 // even a section editor collaborator — this mirrors notes:update/delete's
@@ -122,6 +206,11 @@ const authStore = useAuthStore()
 // Note rows created before sharing existed have no owner_id at all, so
 // treat a missing owner_id as "mine" rather than hiding the buttons.
 const isOwnNote = computed(() => !props.note.owner_id || props.note.owner_id === authStore.user?.id)
+
+// Presence of any active note_pins row = pinned, not per-user (see
+// setup-schema.js's note_pins collection comment) — visible to every
+// viewer identically, unlike reactions.
+const isPinned = computed(() => (props.note.pins ?? []).some((p) => !p.deleted_at))
 
 const highlighted = ref(false)
 const editing = ref(false)
@@ -135,6 +224,67 @@ const reactionsRef = ref(null)
 
 function openReactionPicker(e) {
   reactionsRef.value?.openPicker(e.currentTarget)
+}
+
+// ── Context menu (right-click / long-press) ────────────────────────────────
+const contextMenuOpen = ref(false)
+const contextMenuAnchorRect = ref(null)
+let longPressTimer = null
+const LONG_PRESS_MS = 500
+// Long-press has no native "did the finger move enough to count as a
+// scroll" concept like a real contextmenu event does, so this tracks it by
+// hand — a touchmove past this threshold cancels the pending long-press
+// (this is genuinely new plumbing; there's no existing long-press pattern
+// elsewhere in this codebase to mirror — see the thread prompt's context
+// menu section).
+const LONG_PRESS_MOVE_TOLERANCE_PX = 10
+let touchStartPoint = null
+
+function openMenuAt(rectLike) {
+  contextMenuAnchorRect.value = rectLike
+  contextMenuOpen.value = true
+}
+
+function openContextMenu(e) {
+  // A zero-size rect anchored at the cursor — the menu positions off this
+  // exactly like EmojiPickerPopover positions off a real button's rect.
+  openMenuAt({ top: e.clientY, bottom: e.clientY, left: e.clientX, right: e.clientX })
+}
+
+function onTouchStart(e) {
+  const touch = e.touches[0]
+  if (!touch) return
+  touchStartPoint = { x: touch.clientX, y: touch.clientY }
+  clearTimeout(longPressTimer)
+  longPressTimer = setTimeout(() => {
+    openMenuAt({ top: touch.clientY, bottom: touch.clientY, left: touch.clientX, right: touch.clientX })
+  }, LONG_PRESS_MS)
+}
+
+function onTouchMove(e) {
+  if (!touchStartPoint) return
+  const touch = e.touches[0]
+  if (!touch) return
+  const dx = touch.clientX - touchStartPoint.x
+  const dy = touch.clientY - touchStartPoint.y
+  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) {
+    clearTimeout(longPressTimer)
+  }
+}
+
+function onTouchEnd() {
+  clearTimeout(longPressTimer)
+  touchStartPoint = null
+}
+
+// The ➕ in the quick-react row opens the exact same full EmojiPickerPopover
+// NoteReactions.vue's own toolbar button does, anchored to wherever the
+// context menu itself was triggered from (there's no dedicated button to
+// anchor to here, unlike the toolbar case) — reuses NoteReactions'
+// openPicker rather than a second positioning system.
+function expandReactionPicker() {
+  const rect = contextMenuAnchorRect.value
+  reactionsRef.value?.openPicker({ getBoundingClientRect: () => rect })
 }
 
 const imageFiles = computed(() => (props.note.files ?? []).filter((f) => f.attachment_type === 'image'))
@@ -307,6 +457,13 @@ async function confirmDelete() {
 /* ── Meta & content ── */
 .note-meta {
   margin-bottom: var(--sp-1);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.pin-indicator {
+  font-size: var(--text-xs);
 }
 
 .note-timestamp {
@@ -326,6 +483,18 @@ async function confirmDelete() {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-2);
+}
+
+.thread-affordance {
+  align-self: flex-start;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-link);
+  padding: 2px 0;
+}
+
+.thread-affordance:hover {
+  text-decoration: underline;
 }
 
 .note-files {

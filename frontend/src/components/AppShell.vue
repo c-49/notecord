@@ -19,11 +19,14 @@
           </svg>
         </button>
         <span class="mobile-page-title">{{ activePage?.name ?? 'NoteCord' }}</span>
-        <button class="mobile-search-btn" aria-label="Search" title="Search notes" @click="searchStore.openSearch()">
+        <button class="mobile-search-btn" aria-label="Search" title="Search notes" @click="openSearch">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="11" cy="11" r="8"/>
             <line x1="21" y1="21" x2="16.65" y2="16.65"/>
           </svg>
+        </button>
+        <button class="mobile-search-btn" aria-label="Pinned notes" title="Pinned notes" @click="openPinned">
+          📌
         </button>
       </header>
 
@@ -32,6 +35,8 @@
 
     <Transition name="search-slide">
       <SearchSidebar v-if="searchStore.active" />
+      <PinnedPanel v-else-if="pinnedStore.active" />
+      <ThreadPanel v-else-if="threadPanelStore.openThreadPageId" :page-id="threadPanelStore.openThreadPageId" />
     </Transition>
   </div>
 </template>
@@ -41,18 +46,40 @@ import { ref, onMounted } from 'vue'
 import { RouterView, useRouter, useRoute } from 'vue-router'
 import ServerSidebar from '@/components/ServerSidebar.vue'
 import SearchSidebar from '@/components/search/SearchSidebar.vue'
+import PinnedPanel from '@/components/PinnedPanel.vue'
+import ThreadPanel from '@/components/ThreadPanel.vue'
 import { useNavStore } from '@/stores/navStore'
 import { useSearchStore } from '@/stores/searchStore'
+import { usePinnedStore } from '@/stores/pinnedStore'
+import { useThreadPanelStore } from '@/stores/threadPanelStore'
 import { useSharingStore } from '@/stores/sharingStore'
+import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import { storeToRefs } from 'pinia'
 
 const navStore = useNavStore()
 const searchStore = useSearchStore()
+const pinnedStore = usePinnedStore()
+const threadPanelStore = useThreadPanelStore()
 const sharingStore = useSharingStore()
 const { activePage } = storeToRefs(navStore)
+const { isOnline } = useOnlineStatus()
 const sidebarOpen = ref(false)
 const router = useRouter()
 const route = useRoute()
+
+// Only one right-hand panel is shown at a time — each "open" closes the
+// other two first (see the Transition's v-if/v-else-if chain above).
+function openSearch() {
+  pinnedStore.closePanel()
+  threadPanelStore.close()
+  searchStore.openSearch()
+}
+
+function openPinned() {
+  searchStore.closeSearch()
+  threadPanelStore.close()
+  pinnedStore.openPanel(isOnline.value)
+}
 
 onMounted(async () => {
   // Sharing grants aren't part of the offline Dexie mirror (online-only,

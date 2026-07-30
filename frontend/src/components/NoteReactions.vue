@@ -23,9 +23,9 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, inject } from 'vue'
 import groupBy from 'lodash/groupBy'
-import { useNotesStore } from '@/stores/notesStore'
+import { useNotesStore, notesStoreKey } from '@/stores/notesStore'
 import { useAuthStore } from '@/stores/authStore'
 import { useQuickReactionsStore } from '@/stores/quickReactionsStore'
 import EmojiPickerPopover from '@/components/EmojiPickerPopover.vue'
@@ -34,7 +34,7 @@ const props = defineProps({
   note: { type: Object, required: true },
 })
 
-const notesStore = useNotesStore()
+const notesStore = inject(notesStoreKey, useNotesStore())
 const authStore = useAuthStore()
 const quickReactionsStore = useQuickReactionsStore()
 
@@ -88,7 +88,10 @@ function onSelect(emoji) {
   toggle(emoji)
 }
 
-defineExpose({ openPicker })
+// toggle is also exposed for NoteContextMenu.vue's quick-react row, which
+// calls straight into it (no picker involved) — same as this component's
+// own reaction pills already do.
+defineExpose({ openPicker, toggle })
 </script>
 
 <style scoped>

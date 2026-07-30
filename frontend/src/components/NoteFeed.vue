@@ -36,9 +36,9 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
-import { useNotesStore } from '@/stores/notesStore'
-import { useSearchStore } from '@/stores/searchStore'
+import { ref, computed, watch, nextTick, onUnmounted, inject } from 'vue'
+import { useNotesStore, notesStoreKey } from '@/stores/notesStore'
+import { useJumpStore } from '@/stores/jumpStore'
 import { useOnlineStatus } from '@/composables/useOnlineStatus'
 import { subscribeToNotes } from '@/services/api'
 import { formatDayDivider } from '@/utils/dateUtils'
@@ -48,8 +48,17 @@ const props = defineProps({
   pageId: { type: [String, Number], required: true },
 })
 
-const notesStore = useNotesStore()
-const searchStore = useSearchStore()
+// Provided by PageView.vue (main feed) or ThreadPanel.vue (thread feed) —
+// each mounts its own notesStore instance so the two can be open at once
+// without fighting over the same currentPageId/allNotes. Falls back to the
+// default instance for any standalone usage.
+const notesStore = inject(notesStoreKey, useNotesStore())
+// Shared "jump to a note" mechanic (search results, pinned notes) — see
+// jumpStore.js. Both the main feed and a thread panel's feed watch it; only
+// one of them will ever actually find the target note in its own DOM
+// (jumps always land on the main feed), the other's retry loop below just
+// harmlessly gives up.
+const jumpStore = useJumpStore()
 const { isOnline } = useOnlineStatus()
 const feedEl = ref(null)
 
@@ -65,9 +74,9 @@ watch(() => props.pageId, async (id) => {
   noteSubscription = null
   await notesStore.loadNotes(id)
   await nextTick()
-  // Suppressed during a search jump's cross-page navigation — the
-  // jumpTargetNoteId watcher below handles scrolling in that case instead.
-  if (!searchStore.suppressAutoScroll) scrollToBottom()
+  // Suppressed during a cross-page jump's navigation — the jumpTargetNoteId
+  // watcher below handles scrolling in that case instead.
+  if (!jumpStore.suppressAutoScroll) scrollToBottom()
   noteSubscription = await subscribeToNotes(id, {
     onCreate: notesStore.applyRemoteCreate,
     onUpdate: notesStore.applyRemoteUpdate,
@@ -75,6 +84,8 @@ watch(() => props.pageId, async (id) => {
     onFileCreate: notesStore.applyRemoteFileCreate,
     onReactionCreate: notesStore.applyRemoteReactionCreate,
     onReactionDelete: notesStore.applyRemoteReactionDelete,
+    onPinCreate: notesStore.applyRemotePinCreate,
+    onPinDelete: notesStore.applyRemotePinDelete,
   })
 }, { immediate: true })
 
@@ -82,11 +93,12 @@ onUnmounted(() => {
   noteSubscription?.dispose()
 })
 
-// Performs the actual scroll for search's "jump to result" — fires once the
-// target page has loaded and the note's DOM node exists. A short retry loop
-// covers the case where this fires on the very first tick after a
-// cross-page navigation, before NoteBlock has actually rendered yet.
-watch(() => searchStore.jumpTargetNoteId, async (id) => {
+// Performs the actual scroll for "jump to this note" (search results,
+// pinned notes) — fires once the target page has loaded and the note's DOM
+// node exists. A short retry loop covers the case where this fires on the
+// very first tick after a cross-page navigation, before NoteBlock has
+// actually rendered yet.
+watch(() => jumpStore.jumpTargetNoteId, async (id) => {
   if (!id) return
   let el = null
   for (let i = 0; i < 5 && !el; i++) {
@@ -97,7 +109,7 @@ watch(() => searchStore.jumpTargetNoteId, async (id) => {
   el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   el?.classList.add('jump-highlight')
   setTimeout(() => el?.classList.remove('jump-highlight'), 1500)
-  searchStore.clearJumpTarget()
+  jumpStore.clearJumpTarget()
 })
 
 // Distinguish a genuinely new note (appended at the end — scroll to it) from

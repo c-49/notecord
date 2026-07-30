@@ -73,8 +73,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onBeforeUnmount } from 'vue'
-import { useNotesStore } from '@/stores/notesStore'
+import { ref, computed, onBeforeUnmount, inject } from 'vue'
+import { useNotesStore, notesStoreKey } from '@/stores/notesStore'
 import FileUploadButton from './FileUploadButton.vue'
 import VoiceRecorderButton from './VoiceRecorderButton.vue'
 import RichTextEditor from './RichTextEditor.vue'
@@ -85,7 +85,7 @@ const props = defineProps({
 
 const MAX_ATTACHMENTS = 4
 
-const notesStore = useNotesStore()
+const notesStore = inject(notesStoreKey, useNotesStore())
 const editorRef = ref(null)
 const htmlContent = ref('')
 const plainText = ref('')

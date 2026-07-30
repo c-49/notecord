@@ -298,6 +298,38 @@ async function main() {
   `)
   console.log('  ✓ note_reactions uniqueness index present')
 
+  // ── note_pins ─────────────────────────────────────────────────────────────────
+  // Presence of a row = pinned — no boolean field on notes itself, same
+  // "existence is the signal" shape as note_reactions.
+  console.log('Creating "note_pins" collection…')
+  await createCollection(
+    'note_pins',
+    [
+      primaryKey(),
+      { field: 'note_id', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      { field: 'pinned_by', type: 'uuid', meta: { interface: 'select-dropdown-m2o', required: true }, schema: { is_nullable: false } },
+      dateField('pinned_at', 'date-created'),
+    ],
+    { icon: 'push_pin' }
+  )
+
+  // ── pages: threads ───────────────────────────────────────────────────────────
+  // parent_page_id set only on thread pages (self-referencing, one level
+  // deep only — enforced in the thread-create guard flow below, not the DB).
+  // origin_note_id is the note that spawned the thread.
+  await createField('pages', {
+    field: 'parent_page_id',
+    type: 'uuid',
+    meta: { interface: 'select-dropdown-m2o' },
+    schema: { is_nullable: true },
+  })
+  await createField('pages', {
+    field: 'origin_note_id',
+    type: 'uuid',
+    meta: { interface: 'select-dropdown-m2o' },
+    schema: { is_nullable: true },
+  })
+
   // ── section_access ───────────────────────────────────────────────────────────
   // A grant of viewer/editor access to a section (page_id: null) or a single
   // page within it (page_id: set), given by the section's owner to another
@@ -458,32 +490,63 @@ async function main() {
     console.log(`  ✓ (re)created flow "${name}"`)
   }
 
-  await upsertFlow('Guard: pages create requires section ownership or editor grant', 'pages', [
+  // Covers BOTH normal (section-based) and thread (parent_page_id-based)
+  // page creation in a single flow — Directus does not reliably run two
+  // separate 'filter' flows registered against the same collection+scope
+  // (confirmed empirically: with two independent pages:create flows both
+  // active, EVERY pages:create was rejected with a bare 403 and no
+  // exception logged from either flow, even normal owner-of-section
+  // creates that should trivially pass — merging them into one flow with
+  // one decision point fixed it). Every other guarded collection in this
+  // file only ever needed one flow per collection, so this never came up
+  // before threads.
+  //
+  // The thread branch deliberately never does an item-read directly on
+  // 'pages' — reading the SAME collection a pages:create event is firing
+  // for turns out to reliably poison the request's DB transaction
+  // (confirmed empirically: Postgres error 25P02, "current transaction is
+  // aborted", on an otherwise completely valid SELECT, reproducible with a
+  // minimal 3-operation flow that does nothing but read the row named by
+  // parent_page_id). Instead, it reads the ORIGIN NOTE via the 'notes'
+  // collection (always sent together with parent_page_id — see the thread
+  // prompt's build order) and expands through `page_id.*` to reach the
+  // parent page's owner_id/section_id/parent_page_id — a nested relational
+  // JOIN from a different collection, not a direct read of 'pages', which
+  // does not hit the same issue.
+  //
+  // Both `parent_page_id` and `origin_note_id` MUST be explicitly sent as
+  // `null` (never omitted) on every non-thread pages:create — see
+  // navStore.addPage. A condition operation's filter referencing
+  // `$trigger.payload.<field>` throws a hard validation error when that
+  // field is completely ABSENT from the payload (confirmed empirically:
+  // "Value is required"/"Value can't be null" depending on the operator),
+  // but evaluates safely when the field is explicitly present as `null`.
+  await upsertFlow('Guard: pages create requires ownership or a matching grant (section- or thread-based)', 'pages', [
+    {
+      key: 'is_thread_create',
+      body: {
+        name: 'Is this a thread create?',
+        type: 'condition',
+        position_x: 19,
+        position_y: 3,
+        options: { filter: { $trigger: { payload: { parent_page_id: { _eq: null } } } } },
+      },
+      resolveKey: 'read_section', // parent_page_id IS null → normal (section-based) create
+      rejectKey: 'read_origin', // parent_page_id set → thread create
+    },
     {
       key: 'read_section',
       body: {
         name: 'Read Section',
         type: 'item-read',
         position_x: 19,
-        position_y: 1,
+        position_y: 5,
         options: { collection: 'sections', key: '{{$trigger.payload.section_id}}', query: { fields: ['owner_id'] } },
       },
-      resolveKey: 'is_owner',
+      resolveKey: 'read_section_grant',
     },
     {
-      key: 'is_owner',
-      body: {
-        name: 'Is owner?',
-        type: 'condition',
-        position_x: 19,
-        position_y: 3,
-        options: { filter: { read_section: { owner_id: { _eq: '{{$accountability.user}}' } } } },
-      },
-      resolveKey: null, // condition true → allow, stop here
-      rejectKey: 'read_grant',
-    },
-    {
-      key: 'read_grant',
+      key: 'read_section_grant',
       body: {
         name: 'Read whole-section editor grant',
         type: 'item-read',
@@ -502,17 +565,103 @@ async function main() {
           },
         },
       },
-      resolveKey: 'check_grant',
+      resolveKey: 'check_section',
     },
     {
-      key: 'check_grant',
+      key: 'check_section',
       body: {
-        name: 'Check grant found',
+        name: 'Check section ownership or grant found',
         type: 'exec',
         position_x: 59,
-        position_y: 3,
+        position_y: 5,
         options: {
-          code: "module.exports = async function(data) {\n  if (Array.isArray(data.read_grant) && data.read_grant.length > 0) return true;\n  throw new Error('Only the section owner or a whole-section editor may create a page here.');\n};",
+          // read_section resolves to an EMPTY OBJECT ({}), not
+          // null/undefined, when section_id is null — a plain truthiness
+          // check doesn't catch that, hence checking for a real owner_id
+          // specifically. Root-level page creation (no section) was
+          // silently broken before this line existed, for every single
+          // root-level page ever created — this collection had no other
+          // create-time gate for that case.
+          code: "module.exports = async function(data) {\n  const section = data.read_section;\n  if (!section || !section.owner_id) return true;\n  if (section.owner_id === data.$accountability.user) return true;\n  if (Array.isArray(data.read_section_grant) && data.read_section_grant.length > 0) return true;\n  throw new Error('Only the section owner or a whole-section editor may create a page here.');\n};",
+        },
+      },
+    },
+    {
+      key: 'read_origin',
+      body: {
+        name: 'Read Origin Note (thread create only)',
+        type: 'item-read',
+        position_x: 19,
+        position_y: 1,
+        options: {
+          collection: 'notes',
+          key: '{{$trigger.payload.origin_note_id}}',
+          // Only ONE level of relational expansion (page_id.*) — a second
+          // level (page_id.section_id.owner_id) reliably reproduces the
+          // exact same transaction-poisoning issue as reading 'pages'
+          // directly (confirmed empirically: it only ever failed when the
+          // parent page's OWN section_id was null, i.e. a root-level
+          // parent page — a 2-hop relational JOIN through a null
+          // intermediate FK, not the "same collection" issue this flow's
+          // top comment describes). read_parent_section below does that
+          // second hop as its own separate, single-level read instead.
+          query: { fields: ['owner_id', 'page_id.id', 'page_id.owner_id', 'page_id.parent_page_id', 'page_id.section_id'] },
+        },
+      },
+      resolveKey: 'read_parent_section',
+    },
+    {
+      // Mirrors read_section above exactly (same single-level, proven-safe
+      // shape) — just keyed off the parent page's section_id instead of
+      // the trigger payload's own section_id.
+      key: 'read_parent_section',
+      body: {
+        name: 'Read Parent Page\'s Section (thread create only)',
+        type: 'item-read',
+        position_x: 39,
+        position_y: 1,
+        options: { collection: 'sections', key: '{{read_origin.page_id.section_id}}', query: { fields: ['owner_id'] } },
+      },
+      resolveKey: 'read_thread_grant',
+    },
+    {
+      key: 'read_thread_grant',
+      body: {
+        name: 'Read direct or whole-section grant on the parent page (thread create only)',
+        type: 'item-read',
+        position_x: 59,
+        position_y: 1,
+        options: {
+          collection: 'section_access',
+          query: {
+            filter: {
+              _or: [
+                { page_id: { _eq: '{{read_origin.page_id.id}}' }, user_id: { _eq: '{{$accountability.user}}' } },
+                { section_id: { _eq: '{{read_origin.page_id.section_id}}' }, page_id: { _null: true }, user_id: { _eq: '{{$accountability.user}}' } },
+              ],
+            },
+            limit: 1,
+          },
+        },
+      },
+      resolveKey: 'check_thread',
+    },
+    {
+      key: 'check_thread',
+      body: {
+        name: 'Check thread parent ownership or grant found',
+        type: 'exec',
+        position_x: 79,
+        position_y: 1,
+        options: {
+          // parentPage comes from read_origin.page_id (a JOIN off 'notes',
+          // never a direct read of 'pages' — see the comment above this
+          // flow). A falsy/ownerless parentPage here means origin_note_id
+          // was missing, invalid, or didn't resolve — reject rather than
+          // silently allow, since parent_page_id (checked by the caller)
+          // being non-null is exactly what routed us into this branch.
+          code:
+            "module.exports = async function(data) {\n  const acctUser = data.$accountability.user;\n  const origin = data.read_origin;\n  const parentPage = origin && origin.page_id;\n  if (!parentPage || !parentPage.owner_id) throw new Error('A thread page requires a valid origin_note_id matching parent_page_id.');\n  if (data.$trigger.payload.parent_page_id !== parentPage.id) throw new Error('parent_page_id must match origin_note_id\\'s own page.');\n  if (parentPage.parent_page_id) throw new Error('Threads are one level deep only \\u2014 cannot create a thread off another thread.');\n  if (parentPage.owner_id === acctUser) return true;\n  const parentSection = data.read_parent_section;\n  if (parentSection && parentSection.owner_id === acctUser) return true;\n  if (Array.isArray(data.read_thread_grant) && data.read_thread_grant.length > 0) return true;\n  throw new Error('No access to create a thread here.');\n};",
         },
       },
     },
@@ -670,6 +819,94 @@ async function main() {
     },
   ])
 
+  // Pinning has the exact same visibility bar as reacting — this guard flow
+  // is a straight copy of the note_reactions one above, just targeting
+  // note_pins instead (create permission's own filter is deliberately NOT
+  // enforced on relational dot-paths, same gap as every other guard flow
+  // in this file).
+  await upsertFlow('Guard: note_pins create requires note visibility (owner or shared access)', 'note_pins', [
+    {
+      key: 'read_note',
+      body: {
+        name: 'Read Note',
+        type: 'item-read',
+        position_x: 19,
+        position_y: 1,
+        options: { collection: 'notes', key: '{{$trigger.payload.note_id}}', query: { fields: ['owner_id', 'page_id'] } },
+      },
+      resolveKey: 'is_note_owner',
+    },
+    {
+      key: 'is_note_owner',
+      body: {
+        name: 'Is note owner?',
+        type: 'condition',
+        position_x: 19,
+        position_y: 3,
+        options: { filter: { read_note: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null,
+      rejectKey: 'read_page',
+    },
+    {
+      key: 'read_page',
+      body: {
+        name: 'Read Page',
+        type: 'item-read',
+        position_x: 39,
+        position_y: 5,
+        options: { collection: 'pages', key: '{{read_note.page_id}}', query: { fields: ['owner_id', 'section_id'] } },
+      },
+      resolveKey: 'is_page_owner',
+    },
+    {
+      key: 'is_page_owner',
+      body: {
+        name: 'Is page owner?',
+        type: 'condition',
+        position_x: 39,
+        position_y: 7,
+        options: { filter: { read_page: { owner_id: { _eq: '{{$accountability.user}}' } } } },
+      },
+      resolveKey: null,
+      rejectKey: 'read_grant',
+    },
+    {
+      key: 'read_grant',
+      body: {
+        name: 'Read direct or whole-section grant',
+        type: 'item-read',
+        position_x: 59,
+        position_y: 9,
+        options: {
+          collection: 'section_access',
+          query: {
+            filter: {
+              _or: [
+                { page_id: { _eq: '{{read_note.page_id}}' }, user_id: { _eq: '{{$accountability.user}}' } },
+                { section_id: { _eq: '{{read_page.section_id}}' }, page_id: { _null: true }, user_id: { _eq: '{{$accountability.user}}' } },
+              ],
+            },
+            limit: 1,
+          },
+        },
+      },
+      resolveKey: 'check_grant',
+    },
+    {
+      key: 'check_grant',
+      body: {
+        name: 'Check grant found',
+        type: 'exec',
+        position_x: 79,
+        position_y: 7,
+        options: {
+          code: "module.exports = async function(data) {\n  if (Array.isArray(data.read_grant) && data.read_grant.length > 0) return true;\n  throw new Error('No access to pin here.');\n};",
+        },
+      },
+    },
+  ])
+
   // ── backup_status ────────────────────────────────────────────────────────────
   // Written by backend/backup/backup-db.sh and export-notes.js after each
   // successful run; read by the frontend to show "Last backup: ..." in the
@@ -742,6 +979,16 @@ async function main() {
   // note_reactions relations — same one_field pattern, registers the O2M's FK side
   await createRelation('note_reactions', 'note_id', 'notes', 'CASCADE', { one_field: 'reactions' })
   await createRelation('note_reactions', 'user_id', 'directus_users', 'CASCADE')
+  // note_pins relations — same one_field pattern as note_reactions
+  await createRelation('note_pins', 'note_id', 'notes', 'CASCADE', { one_field: 'pins' })
+  await createRelation('note_pins', 'pinned_by', 'directus_users', 'CASCADE')
+  // Threads: deleting the origin note cascades to the thread page (see the
+  // thread prompt's cascade-behavior writeup) — the thread page's own notes
+  // then cascade in turn via notes.page_id CASCADE above. Deleting the
+  // parent page directly also cascades to its thread pages, since a thread
+  // is meaningless without its parent.
+  await createRelation('pages', 'origin_note_id', 'notes', 'CASCADE')
+  await createRelation('pages', 'parent_page_id', 'pages', 'CASCADE')
 
   // Directus 11 requires an explicit directus_fields entry for the virtual O2M alias
   // on the "one" side, even when one_field is set on the relation.
@@ -752,6 +999,11 @@ async function main() {
   })
   await createField('notes', {
     field: 'reactions',
+    type: 'alias',
+    meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
+  })
+  await createField('notes', {
+    field: 'pins',
     type: 'alias',
     meta: { special: ['o2m'], interface: 'list-o2m', display: 'related-values', hidden: false },
   })
@@ -794,7 +1046,7 @@ async function main() {
 
   const policiesResp = await req('GET', '/policies?filter[admin_access][_eq]=true&limit=10')
   const policies = policiesResp.data ?? policiesResp
-  const userCollections = ['sections', 'pages', 'notes', 'note_files', 'note_reactions']
+  const userCollections = ['sections', 'pages', 'notes', 'note_files', 'note_reactions', 'note_pins']
   const actions = ['create', 'read', 'update', 'delete']
 
   for (const policy of policies) {
@@ -970,7 +1222,7 @@ async function main() {
   // read is open to viewer + editor (direct page grant or inherited
   // whole-section grant); update/delete additionally require role: 'editor'.
   await upsertPermission(appPolicy.id, 'pages', 'create', {
-    fields: ['id', 'name', 'emoji', 'section_id', 'sort_order'],
+    fields: ['id', 'name', 'emoji', 'section_id', 'sort_order', 'parent_page_id', 'origin_note_id'],
     presets: { owner_id: '$CURRENT_USER' },
   })
   // Bug found via the two-account browser smoke test (2026-07-27): an
@@ -981,6 +1233,13 @@ async function main() {
   // collaborator's content — reading their own section came back empty.
   // This never mattered pre-sharing (every row in your space was always
   // authored by you), so it's a genuinely new failure mode.
+  //
+  // Thread pages (parent_page_id set) have no section of their own to
+  // check ownership/grants against, so access instead walks parent_page_id
+  // through the exact same branches one hop further — dynamically
+  // inherited from the parent, not a one-time copy, so a later change to
+  // the parent's sharing is reflected automatically (see the thread
+  // prompt's "Permissions — the part that needs care" section).
   await upsertPermission(appPolicy.id, 'pages', 'read', {
     fields: '*',
     permissions: {
@@ -989,6 +1248,10 @@ async function main() {
         { section_id: { owner_id: { _eq: '$CURRENT_USER' } } },
         sharedGrant(),
         sharedViaWholeSection(),
+        { parent_page_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { parent_page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { parent_page_id: sharedGrant() },
+        { parent_page_id: sharedViaWholeSection() },
       ],
     },
   })
@@ -996,7 +1259,14 @@ async function main() {
     await upsertPermission(appPolicy.id, 'pages', action, {
       fields: '*',
       permissions: {
-        _or: [{ owner_id: { _eq: '$CURRENT_USER' } }, sharedGrant(editorOnly), sharedViaWholeSection(editorOnly)],
+        _or: [
+          { owner_id: { _eq: '$CURRENT_USER' } },
+          sharedGrant(editorOnly),
+          sharedViaWholeSection(editorOnly),
+          { parent_page_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+          { parent_page_id: sharedGrant(editorOnly) },
+          { parent_page_id: sharedViaWholeSection(editorOnly) },
+        ],
       },
     })
   }
@@ -1105,6 +1375,53 @@ async function main() {
   await upsertPermission(appPolicy.id, 'note_reactions', 'delete', {
     fields: '*',
     permissions: { user_id: { _eq: '$CURRENT_USER' } },
+  })
+
+  // note_pins: create/read follow the exact same owner/grant visibility
+  // chain as note_reactions above (pinning only requires being able to see
+  // the note). delete is deliberately NOT a straight copy of
+  // note_reactions' delete rule though — pins are a shared, page-level
+  // concept (any collaborator can pin), so unpinning is a hybrid: the
+  // pinning user can always remove their own pin, OR the owner of the note
+  // /page/section can remove ANY pin (cleaning up pins other collaborators
+  // left) — but a non-owner collaborator can only remove their own,
+  // deliberately excluding sharedGrant()/sharedViaWholeSection() from this
+  // branch so a mere collaborator can't unpin someone else's pin.
+  await upsertPermission(appPolicy.id, 'note_pins', 'create', {
+    fields: ['id', 'note_id'],
+    presets: { pinned_by: '$CURRENT_USER' },
+    permissions: {
+      _or: [
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+        { note_id: { page_id: sharedGrant() } },
+        { note_id: { page_id: sharedViaWholeSection() } },
+      ],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'note_pins', 'read', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+        { note_id: { page_id: sharedGrant() } },
+        { note_id: { page_id: sharedViaWholeSection() } },
+      ],
+    },
+  })
+  await upsertPermission(appPolicy.id, 'note_pins', 'delete', {
+    fields: '*',
+    permissions: {
+      _or: [
+        { pinned_by: { _eq: '$CURRENT_USER' } },
+        { note_id: { owner_id: { _eq: '$CURRENT_USER' } } },
+        { note_id: { page_id: { owner_id: { _eq: '$CURRENT_USER' } } } },
+        { note_id: { page_id: { section_id: { owner_id: { _eq: '$CURRENT_USER' } } } } },
+      ],
+    },
   })
 
   // quick_reactions: each user's own editable set of one-click "quick react"
@@ -1293,7 +1610,7 @@ async function main() {
   }
 
   console.log('\n✅ Schema setup complete!\n')
-  console.log('Collections created: sections, pages, notes, note_files')
+  console.log('Collections created: sections, pages, notes, note_files, note_reactions, note_pins')
   console.log(`Directus admin: ${BASE}`)
   console.log('\nSet frontend/.env VITE_DIRECTUS_ASSET_TOKEN to the same value as ASSET_TOKEN.')
   console.log(`Log into the app with APP_USER_EMAIL (${APP_USER_EMAIL}) / APP_USER_PASSWORD.`)
